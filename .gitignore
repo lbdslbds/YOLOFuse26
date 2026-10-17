@@ -1,0 +1,56 @@
+# Python and local environments
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.venv/
+venv/
+env/
+build/
+dist/
+
+# Datasets, checkpoints, exports, and experiment output
+/datasets/
+/data/
+/runs/
+/reports/
+/weights/*
+!/weights/README.md
+*.pt
+*.pth
+*.onnx
+*.engine
+*.torchscript
+*.tflite
+*.mlpackage/
+*.npy
+*.npz
+*.cache
+*.log
+events.out.tfevents.*
+
+# Private migration delivery records (kept locally)
+/MIGRATION.json
+/source_manifest.json
+/README_LOCAL_MIGRATION.md
+*.zip
+*.tar
+*.tar.gz
+
+# Credentials and machine-specific files
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+.ssh/
+.aws/
+.codex/
+.agents/
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db

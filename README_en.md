@@ -1,0 +1,185 @@
+<p align="center">English | <a href="README.md">中文</a></p>
+
+<h1 align="center">YOLOFuse26</h1>
+<p align="center">RGB + IR Multimodal Object Detection with YOLO26</p>
+
+<p align="center">
+  <a href="https://github.com/lbdslbds/YOLOFuse26"><img src="https://img.shields.io/badge/YOLO-26-2563eb" alt="YOLO26"></a>
+  <a href="https://github.com/ultralytics/ultralytics/tree/v8.4.180"><img src="https://img.shields.io/badge/Ultralytics-8.4.180-blue" alt="Ultralytics 8.4.180"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-AGPL--3.0-green" alt="AGPL-3.0"></a>
+  <a href="https://github.com/lbdslbds/YOLOFuse26/stargazers"><img src="https://img.shields.io/github/stars/lbdslbds/YOLOFuse26?style=social" alt="GitHub stars"></a>
+</p>
+
+**YOLOFuse26** brings the multimodal fusion approach of [YOLOFuse](https://github.com/WangQvQ/YOLOFuse) to **Ultralytics 8.4.180 / YOLO26**. It supports joint training, validation, and inference on paired visible (RGB) and infrared (IR) images, with seven fusion strategies for multimodal detection research in low light, surveillance, disaster response, and industrial inspection.
+
+Migration and functional validation are complete. Detection accuracy after full training still needs evaluation on the target dataset.
+
+## 📋 Changelog
+
+### 2026-10-17 · YOLO26 migration
+
+- Pinned the backbone to official `v8.4.180`, including the DFL-free YOLO26 head, one-to-one / one-to-many branches, and MuSGD.
+- Rebuilt Data, Decision, Early, Mid, Easy, DEFA, and DEYOLO fusion graphs, with 35 YAML configurations across `n/s/m/l/x`.
+- Unified six-channel inputs across training, validation, and inference. Geometric augmentation is shared; HSV augmentation affects RGB only.
+- Added graph-based initialization from official YOLO26 pretrained weights and a separate RGB+IR disk cache.
+- Passed 14 CPU and 7 CUDA regression cases, short training runs, both inference heads, and TorchScript export checks.
+
+## ✨ Features
+
+- **Joint RGB + IR detection** with matching filenames and shared YOLO annotations; grayscale IR is read as three channels.
+- **Multiple fusion stages** spanning input fusion, dual backbones, multiscale features, and attention.
+- **YOLO26 detection heads** with one-to-one NMS-free inference by default; `--nms` selects one-to-many + NMS.
+- **Ultralytics Python API** through `YOLO(...).train()`, `.val()`, `.predict()`, and `.export()`.
+- **Strict input checks** for missing IR images, decoding failures, and mismatched dimensions.
+- **Single-modality support** for standard three-channel YOLO26 models.
+
+## 🧩 Fusion strategies
+
+| `--fusion` | Architecture | Nano configuration |
+| --- | --- | --- |
+| `data` | Six-channel input with a shared backbone and PAN | [yolo26n-data.yaml](ultralytics/cfg/models/fuse26/yolo26n-data.yaml) |
+| `decision` (default) | Two YOLO26 backbones and PANs; interleaved modality features enter the detection head | [yolo26n-decision.yaml](ultralytics/cfg/models/fuse26/yolo26n-decision.yaml) |
+| `early` | P2 fusion followed by a shared backbone and PAN | [yolo26n-early.yaml](ultralytics/cfg/models/fuse26/yolo26n-early.yaml) |
+| `mid` | P3/P4/P5 fusion followed by a shared PAN | [yolo26n-mid.yaml](ultralytics/cfg/models/fuse26/yolo26n-mid.yaml) |
+| `easy` | Fused P3/P4/P5 features from two backbones feed the detector directly | [yolo26n-easy.yaml](ultralytics/cfg/models/fuse26/yolo26n-easy.yaml) |
+| `defa` | Dual backbones, Dynamic Enhanced Fusion Attention, and a shared PAN | [yolo26n-defa.yaml](ultralytics/cfg/models/fuse26/yolo26n-defa.yaml) |
+| `deyolo` | Dual backbones, DEA attention from [DEYOLO](https://arxiv.org/abs/2412.04931), and a shared PAN | [yolo26n-deyolo.yaml](ultralytics/cfg/models/fuse26/yolo26n-deyolo.yaml) |
+
+Select a model size with `--scale n/s/m/l/x`. Runtime validation currently covers **n**; larger configurations have been generated but have not been individually validated. DEFA attention can consume substantial memory at high resolution; adjust the batch size to your GPU.
+
+## 🚀 Quick start
+
+### 1. Environment
+
+Python 3.10 or newer is recommended. Install a PyTorch / CUDA build compatible with your GPU environment.
+
+```bash
+git clone https://github.com/lbdslbds/YOLOFuse26.git
+cd YOLOFuse26
+python -m venv .venv
+source .venv/bin/activate
+python -m pip install -e .
+```
+
+On Windows PowerShell, activate with `.venv\Scripts\Activate.ps1`. Install `faster-coco-eval` before validation and `pytest` before running regression tests.
+
+This repository vendors a modified `ultralytics` package. Use `pip install -e .` in a dedicated environment.
+
+### 2. Dataset configuration
+
+Edit [configs/rgbir.yaml](configs/rgbir.yaml): set `path` to the **absolute path** of your dataset, and set `nc` and `names` to match its labels. Keep `channels: 6`.
+
+```yaml
+path: /path/to/datasets
+train: images/train
+val: images/val
+channels: 6
+nc: 4
+names:
+  0: person
+  1: rider
+  2: bicycle
+  3: car
+```
+
+### 3. Training
+
+```bash
+# Decision fusion; official YOLO26 nano pretrained weights download automatically
+python train_dual.py --data configs/rgbir.yaml --fusion decision --scale n --device 0 --epochs 100 --batch 16
+
+# Easy feature fusion
+python train_dual.py --data configs/rgbir.yaml --fusion easy --scale n --device 0 --epochs 100 --batch 16
+```
+
+The default pretrained path is `weights/yolo26{scale}.pt`. Ultralytics downloads the official asset if it is missing. Use `--weights /path/to/yolo26n.pt` for a local checkpoint or `--scratch` for random initialization. The pretrained scale must match `--scale`; classification outputs are initialized for the target dataset.
+
+Defaults: `imgsz=640`, `optimizer=MuSGD`, `seed=0`, `amp=False`, `cache=False`. Options include `--cache disk`, `--cache ram`, `--optimizer SGD`, and `--device cpu`.
+
+```bash
+# Resume a checkpoint produced by this project
+python train_dual.py --resume runs/train/yolo26n-decision/weights/last.pt --device 0
+```
+
+**Old YOLOFuse checkpoints are incompatible with the YOLO26 architecture and cannot resume training directly.** See [weights/README.md](weights/README.md).
+
+### 4. Validation and inference
+
+```bash
+python val_dual.py --weights runs/train/yolo26n-decision/weights/best.pt --data configs/rgbir.yaml --device 0
+
+python infer_dual.py --weights runs/train/yolo26n-decision/weights/best.pt --source /path/to/datasets/images/val --device 0
+```
+
+`--source` accepts an RGB image, directory, or TXT list. The `images` directory component is mapped to `imagesIR`. RGB visualizations are written under the corresponding `runs/predict/` run directory; IR visualizations are placed in its `ir/` subdirectory. Both show the same fused detections.
+
+Add `--nms` to training, validation, or inference to select one-to-many + NMS. Paired file inputs support images. For live video, synchronize both streams yourself before supplying a six-channel input.
+
+### 5. Python API
+
+```python
+from ultralytics import YOLO
+from fusion_weights import initialize_from_yolo26
+
+model = YOLO("ultralytics/cfg/models/fuse26/yolo26n-decision.yaml")
+initialize_from_yolo26(model, "weights/yolo26n.pt")
+model.train(data="configs/rgbir.yaml", device=0, epochs=100, nms=False,
+            project="runs/train", name="yolo26n-decision")
+
+trained = YOLO("runs/train/yolo26n-decision/weights/best.pt")
+results = trained.predict("/path/to/datasets/images/val", device=0, nms=False)
+```
+
+## 📂 Dataset layout and input contract
+
+```text
+datasets/
+├── images/                 # RGB images
+│   ├── train/000001.jpg
+│   └── val/000002.jpg
+├── imagesIR/               # Registered IR images with matching names and dimensions
+│   ├── train/000001.jpg
+│   └── val/000002.jpg
+└── labels/                 # Shared YOLO TXT annotations
+    ├── train/000001.txt
+    └── val/000002.txt
+```
+
+- Both modalities must have matching filenames and extensions. Each RGB path must contain exactly one directory named `images`.
+- Register both modalities before use and ensure equal dimensions. The reader checks dimensions; registration quality remains a dataset preparation step.
+- Each label row is `class_id x_center y_center width height`, with normalized coordinates in `[0, 1]`.
+- Tensor and six-channel NumPy inputs use `RGB_R, RGB_G, RGB_B, IR_R, IR_G, IR_B` ordering. Tensors are BCHW in `[0, 1]`; NumPy images are HWC `uint8`.
+- RGB+IR disk caches use `*.rgbir26.npy` and track modification times for both source images, independently of old YOLOFuse caches.
+
+## 🧪 Validation and reproduction
+
+Migration validation passed 14 CPU and 7 CUDA regression cases, covering gradients through both modalities, both inference heads, caching, serialization, missing IR, and single RGB compatibility. Decision / Easy passed short training, validation, and inference at 640 resolution. Six-channel TorchScript export passed numerical parity checks.
+
+```bash
+python -m pytest -c tests/pytest.ini tests/test_rgbir26.py -q
+```
+
+See [migration and validation notes](docs/MIGRATION.md) for GPU tests, optional dataset integration checks, and coverage limits. Fully trained fusion checkpoints and target-dataset accuracy results are not published yet.
+
+## ⚡ Cloud deployment
+
+On AutoDL or another GPU server, clone the repository, configure PyTorch / CUDA, run `pip install -e .`, and update the dataset path. Then use the commands above. Tune batch size, optimizer, and training duration for your dataset and GPU memory.
+
+## 📁 Repository layout
+
+```text
+YOLOFuse26/
+├── configs/rgbir.yaml                  # Paired dataset template
+├── docs/MIGRATION.md                   # Migration design and validation scope
+├── ultralytics/cfg/models/fuse26/      # 35 YOLO26 fusion configurations
+├── ultralytics/data/rgbir.py           # Paired reader and path mapping
+├── ultralytics/nn/modules/            # Modality selection, DEA, and DEFA
+├── fusion_weights.py                 # Pretrained parameter transfer
+├── train_dual.py / val_dual.py / infer_dual.py
+├── tools/                            # Graph generation and integration checks
+└── tests/                            # RGB+IR regression tests
+```
+
+## 🙏 Acknowledgements and license
+
+Built on [WangQvQ/YOLOFuse](https://github.com/WangQvQ/YOLOFuse) and [Ultralytics YOLO](https://github.com/ultralytics/ultralytics/tree/v8.4.180). Original attribution and the [AGPL-3.0 license](LICENSE) are retained. The official upstream README is preserved as [README_UPSTREAM.md](README_UPSTREAM.md).
