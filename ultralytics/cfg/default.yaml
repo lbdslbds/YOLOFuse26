@@ -86,6 +86,7 @@ line_width: # (int, optional) line width of boxes; auto-scales with image size i
 format: torchscript # (str) target format, e.g. torchscript|onnx|openvino|engine|coreml|coreai|saved_model|pb|edgetpu|litert|paddle|mnn|ncnn|imx|rknn|executorch|axelera|deepx|qnn|hailo|ascend|xilinx
 optimize: False # (bool) DEEPX only; higher compiler optimization (slower compile, faster inference)
 dynamic: False # (bool) dynamic shapes for torchscript, onnx, openvino, engine, coreml, mnn; enable variable image sizes
+dynamo: False # (bool) ONNX only; opt into the torch.export exporter (torch>=2.6) and dynamic_shapes
 simplify: True # (bool) supported ONNX-based exports (see export table); simplify intermediate ONNX graph
 opset: # (int, optional) supported ONNX-based exports (see export table); intermediate ONNX opset version
 workspace: # (float, optional) engine (TensorRT) only; workspace size in GiB, e.g. 4

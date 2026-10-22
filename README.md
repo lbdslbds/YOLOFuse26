@@ -16,6 +16,14 @@
 
 ## 📋 更新日志
 
+### 2026-10-23 · 编译、导出与运算量验证
+
+- Decision / DEFA 已通过 CPU 与 CUDA 的实际 Inductor 编译、梯度对照，以及 `compile=True + AMP` 的真实配对数据短程训练和双头验证。
+- DEFA 已强制使用 PyTorch SDPA FlashAttention，并核对 CUDA 前向与反向内核。
+- 新增 ONNX `dynamo=True` / `dynamic_shapes` 路径，通过 ONNX Runtime 多尺寸与旧导出兼容验证。
+- 保留原始 COCO crowd 评估规则，固定 train/val/test 为 5279/721/2676 对图像；新增完整 640 分辨率 GFLOPs 核算。
+- AMP 旧环境自检失败的数值原因、PyTorch 2.12.1 验证结果和复现命令见 [运行与测试说明](docs/MODERN_RUNTIME.md)。
+
 ### 2026-10-17 · YOLO26 迁移
 
 - 基座固定为官方 `v8.4.180`，接入 YOLO26 的无 DFL 检测头、one-to-one / one-to-many 双头和 MuSGD。
@@ -46,6 +54,21 @@
 | `deyolo` | 双主干 + [DEYOLO](https://arxiv.org/abs/2412.04931) 的 DEA 注意力 + 共享 PAN | [yolo26n-deyolo.yaml](ultralytics/cfg/models/fuse26/yolo26n-deyolo.yaml) |
 
 使用 `--scale n/s/m/l/x` 选择模型尺寸。当前运行验证覆盖 **n**；其余尺寸已生成配置，尚未逐一验证。DEFA 的跨模态注意力开销较大，高分辨率训练时需按显存调整 batch。
+
+## 📊 模型结果与计算量
+
+| 模型架构 | 模态 | 精度 (P) | 召回率 (R) | mAP@50 | mAP@50:95 | 模型大小 (MB) | 计算量 (GFLOPs) |
+| --- | --- | --- | --- | --- | --- | --- | ---: |
+| YOLO26n（baseline） | RGB | | | | | | |
+| YOLO26n-Data（输入融合） | RGB+IR | | | | | | |
+| YOLO26n-Decision（决策级融合） | RGB+IR | | | | | | 10.626 |
+| YOLO26n-Early（早期特征融合） | RGB+IR | | | | | | |
+| YOLO26n-Mid（中期特征融合） | RGB+IR | | | | | | |
+| YOLO26n-Easy（极简融合） | RGB+IR | | | | | | |
+| YOLO26n-DEFA（动态增强融合注意力） | RGB+IR | | | | | | 37.470 |
+| YOLO26n-DEYOLO | RGB+IR | | | | | | |
+
+口径：n 尺寸、4 类、batch=1、每对 RGB+IR 均为 640×640；完整六通道前向、融合 Conv/BN 并仅保留一个部署检测头，使用 THOP 2.2.3 的 `GFLOPs = 2 × MACs / 10^9`，包含注意力与动态核运算，不含预处理和 NMS。one-to-one 与 one-to-many 的计算量一致。精度和模型文件大小等待对应完整训练结果，空白项保持未报告；短程功能测试不用于填写精度。计数明细及命令见 [运行与测试说明](docs/MODERN_RUNTIME.md#gflops-口径与复现)。
 
 ## 🚀 快速开始
 
@@ -90,11 +113,14 @@ python train_dual.py --data configs/rgbir.yaml --fusion decision --scale n --dev
 
 # Easy 特征融合
 python train_dual.py --data configs/rgbir.yaml --fusion easy --scale n --device 0 --epochs 100 --batch 16
+
 ```
 
 预训练权重默认位于 `weights/yolo26{scale}.pt`，缺失时由 Ultralytics 下载官方权重。可以用 `--weights /path/to/yolo26n.pt` 指定本地文件，或用 `--scratch` 从头训练。预训练权重尺寸必须与 `--scale` 一致；分类输出层按目标数据集重新初始化。
 
-默认参数：`imgsz=640`、`optimizer=MuSGD`、`seed=0`、`amp=False`、`cache=False`。支持 `--cache disk`、`--cache ram`、`--optimizer SGD` 和 `--device cpu`。
+默认参数：`imgsz=640`、`optimizer=MuSGD`、`seed=0`、`amp=True`、`cache=False`。新训练默认启用 AMP 混合精度，由训练器执行兼容性检查；使用 `--no-amp` 可切换为 FP32。支持 `--cache disk`、`--cache ram`、`--optimizer SGD` 和 `--device cpu`。续训沿用 checkpoint 中的精度设置。
+
+训练或验证可加 `--compile` 启用 `torch.compile`。PyTorch 2.12.1 环境和新版 ONNX 导出示例见 [运行与测试说明](docs/MODERN_RUNTIME.md)。启用原始 COCO crowd 训练与评估的数据配置及政策见 [Crowd 说明](docs/CROWD.md)。
 
 ```bash
 # 继续训练本项目产生的 checkpoint
@@ -154,6 +180,8 @@ datasets/
 ## 🧪 验证与复现
 
 迁移阶段已通过 14 项 CPU 回归测试与 7 项 CUDA 模型测试，覆盖双模态梯度、双头推理、缓存、序列化、缺失 IR 和单 RGB 兼容性。Decision / Easy 已通过 640 分辨率短程训练、验证与推理；六通道 TorchScript 已完成导出和数值一致性检查。
+
+2026-10-23 在 PyTorch 2.12.1 上通过 CPU/CUDA 编译、FlashAttention 前反向、Decision/DEFA 短程训练及双头验证，以及 10 项 ONNX 导出数值检查。完整训练的精度变化应单独比较，短程验证结果不代表精度提升。完整命令与范围见 [运行与测试说明](docs/MODERN_RUNTIME.md)。
 
 ```bash
 python -m pytest -c tests/pytest.ini tests/test_rgbir26.py -q

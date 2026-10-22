@@ -66,12 +66,9 @@ class DEFA(nn.Module):
         kw = kernel_weights.view(B, k * k, 1).expand(-1, -1, N)
         # 爱因斯坦求和融合
         dynamic_feat = torch.einsum('bkn,bckn->bcn', kw, U.view(B, -1, k * k, N))
-        dynamic_feat = F.fold(
-            dynamic_feat,
-            output_size=vi_feat.shape[2:],
-            kernel_size=1,
-            stride=1
-        )  # [B, C, H, W]
+        # A 1x1 fold with stride 1 has no overlap: it only restores the spatial shape.
+        # Reshape is equivalent, preserves gradients and avoids ONNX Col2Im shape limitations.
+        dynamic_feat = dynamic_feat.reshape_as(vi_feat)  # [B, C, H, W]
 
         # --- 门控融合 ---
         gates = self.gate(torch.cat([vi_feat, ir_feat], dim=1))  # [B, 2, H, W]

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 from typing import Any
@@ -15,9 +16,22 @@ from ultralytics.data.utils import get_split_fraction
 from ultralytics.engine.validator import BaseValidator
 from ultralytics.utils import DEFAULT_CFG, LOCAL_RANK, LOGGER, RANK, nms, ops
 from ultralytics.utils.checks import check_requirements
+from ultralytics.utils.crowd import CrowdCOCOEvaluator
 from ultralytics.utils.metrics import ConfusionMatrix, DetMetrics, box_iou
 from ultralytics.utils.plotting import plot_images
 from ultralytics.utils.torch_utils import torch_distributed_zero_first
+
+
+class CrowdDetectionMetrics(DetMetrics):
+    """COCO crowd metrics expose no curves from the incompatible Ultralytics matcher."""
+
+    @property
+    def curves(self):
+        return []
+
+    @property
+    def curves_results(self):
+        return []
 
 
 class DetectionValidator(BaseValidator):
@@ -59,6 +73,9 @@ class DetectionValidator(BaseValidator):
         self.iouv = torch.linspace(0.5, 0.95, 10)  # IoU vector for mAP@0.5:0.95
         self.niou = self.iouv.numel()
         self.metrics = DetMetrics()
+        self.crowd_evaluator = None
+        self.crowd_eval_files = []
+        self.crowd_eval_result = None
 
     @staticmethod
     def _check_max_det(args, datasets: dict[str, torch.utils.data.Dataset]) -> None:
@@ -115,13 +132,34 @@ class DetectionValidator(BaseValidator):
         Args:
             model (torch.nn.Module): Model to validate.
         """
+        self.crowd_evaluator = None
+        self.crowd_eval_files = []
+        self.crowd_eval_result = None
+        if self.data.get("crowd_labels") or self.data.get("coco_annotations"):
+            split = self.args.split or "val"
+            annotations = self.data.get("coco_annotations")
+            if not isinstance(annotations, dict) or not annotations.get(split):
+                raise ValueError(f"Crowd-aware validation requires coco_annotations[{split!r}] in data.yaml")
+            if self.args.single_cls:
+                raise ValueError("Crowd-aware original COCO evaluation does not support single_cls remapping")
+            self.crowd_evaluator = CrowdCOCOEvaluator(annotations[split], model.names, split, self.args.max_det)
+            self.args.save_json = True  # every training epoch must use original COCO GT for best.pt selection
+            self.args.plots = False
+            self.metrics = CrowdDetectionMetrics()
+            LOGGER.info(
+                "Crowd-aware original COCO evaluation enabled for training and standalone validation. "
+                "Ultralytics confusion matrices and PR/F1 plots are disabled. "
+                + self.crowd_evaluator.precision_recall_policy
+            )
+        elif isinstance(self.metrics, CrowdDetectionMetrics):
+            self.metrics = DetMetrics()
         if self.args.save_txt:  # labels are appended per image, drop those a previous run or epoch left in save_dir
             with torch_distributed_zero_first(LOCAL_RANK):
                 if LOCAL_RANK in {-1, 0}:
                     for f in (self.save_dir / "labels").glob("*.txt"):
                         f.unlink(missing_ok=True)
             self.label_root = os.path.commonpath([os.path.dirname(f) for f in self.dataloader.dataset.im_files])
-        if not self.training:
+        if not self.training and self.crowd_evaluator is None:
             self._check_max_det(self.args, {self.args.split or "val": self.dataloader.dataset})
         val = self.data.get(self.args.split, "")  # validation path
         self.is_coco = (
@@ -131,6 +169,8 @@ class DetectionValidator(BaseValidator):
         )
         self.is_lvis = isinstance(val, str) and "lvis" in val and not self.is_coco  # is LVIS
         self.class_map = converter.coco80_to_coco91_class() if self.is_coco else list(range(1, len(model.names) + 1))
+        if self.crowd_evaluator is not None:
+            self.class_map = self.crowd_evaluator.class_map
         self.args.save_json |= self.args.val and (self.is_coco or self.is_lvis) and not self.training  # run final val
         self.names = model.names
         self.nc = len(model.names)
@@ -140,7 +180,11 @@ class DetectionValidator(BaseValidator):
             native_model.set_head_attr(max_det=self.args.max_det, agnostic_nms=self.args.agnostic_nms)
         self.seen = 0
         self.jdict = []
-        self.is_custom_json = self.args.save_json and self.args.task == "detect" and not (self.is_coco or self.is_lvis)
+        self.is_custom_json = (
+            self.args.save_json
+            and self.args.task == "detect"
+            and not (self.is_coco or self.is_lvis or self.crowd_evaluator is not None)
+        )
         self.gdict = getattr(self, "gdict", None) if self.is_custom_json else None
         self.build_gdict = self.is_custom_json and self.gdict is None
         self.eval_ids = list(self.dataloader.sampler) if self.is_custom_json else None
@@ -248,6 +292,18 @@ class DetectionValidator(BaseValidator):
                     for i, (b, c) in enumerate(zip(boxes, cls))
                 )
             predn = self._prepare_pred(pred)
+            if self.crowd_evaluator is not None:
+                # Record images with zero predictions too, so imgIds reflects the actual visited subset.
+                self.crowd_eval_files.append(self.crowd_evaluator.file_name(pbatch["im_file"]))
+                if len(predn["cls"]):
+                    predn_scaled = self.scale_preds(predn, pbatch)
+                    self.pred_to_json(predn_scaled, pbatch)
+                    if self.args.save_txt:
+                        name = "_".join(Path(pbatch["im_file"]).relative_to(self.label_root).with_suffix("").parts)
+                        self.save_one_txt(
+                            predn_scaled, self.args.save_conf, pbatch["ori_shape"], self.save_dir / "labels" / f"{name}.txt"
+                        )
+                continue  # never report ordinary-box matching as crowd-aware P/R, AP or image metrics
             if self.is_custom_json:
                 self.pred_counts.append(len(predn["cls"]))
 
@@ -292,7 +348,7 @@ class DetectionValidator(BaseValidator):
             for normalize in True, False:
                 self.confusion_matrix.plot(save_dir=self.save_dir, normalize=normalize, on_plot=self.on_plot)
         self.metrics.speed = self.speed
-        self.metrics.confusion_matrix = self.confusion_matrix
+        self.metrics.confusion_matrix = None if self.crowd_evaluator is not None else self.confusion_matrix
         self.metrics.save_dir = self.save_dir
 
     def _gather_image_metrics(self, metric) -> None:
@@ -319,19 +375,26 @@ class DetectionValidator(BaseValidator):
                     merged_stats[key].extend(value)
             gathered_json = [None] * dist.get_world_size()
             dist.gather_object(
-                (self.jdict, self.gdict if self.build_gdict else None, self.pred_counts), gathered_json, dst=0
+                (self.jdict, self.gdict if self.build_gdict else None, self.pred_counts, self.crowd_eval_files),
+                gathered_json,
+                dst=0,
             )
-            self.jdict = [x for jdict, _, _ in gathered_json for x in jdict]
-            self.pred_counts = [x for _, _, counts in gathered_json for x in counts]
+            self.jdict = [x for jdict, _, _, _ in gathered_json for x in jdict]
+            self.pred_counts = [x for _, _, counts, _ in gathered_json for x in counts]
+            self.crowd_eval_files = [x for _, _, _, files in gathered_json for x in files]
             if self.build_gdict:
                 for key in "images", "annotations":
-                    self.gdict[key] = [x for _, gdict, _ in gathered_json for x in gdict[key]]
+                    self.gdict[key] = [x for _, gdict, _, _ in gathered_json for x in gdict[key]]
             self.metrics.stats = merged_stats
             self._gather_image_metrics(self.metrics.box)
             self.seen = len(self.dataloader.dataset)  # total image count from dataset
         elif RANK > 0:
             dist.gather_object(self.metrics.stats, None, dst=0)
-            dist.gather_object((self.jdict, self.gdict if self.build_gdict else None, self.pred_counts), None, dst=0)
+            dist.gather_object(
+                (self.jdict, self.gdict if self.build_gdict else None, self.pred_counts, self.crowd_eval_files),
+                None,
+                dst=0,
+            )
             self._gather_image_metrics(self.metrics.box)
             self.jdict = []
             self.metrics.clear_stats()
@@ -347,6 +410,15 @@ class DetectionValidator(BaseValidator):
         Returns:
             (dict[str, Any]): Dictionary containing metrics results.
         """
+        if self.crowd_evaluator is not None:
+            # BaseValidator's standalone JSON hook skips empty predictions and runs after on_val_end.
+            # Evaluate here for both entry points, before printing/callbacks or training checkpoint selection.
+            stats = self.eval_json({})
+            (self.save_dir / "predictions.json").write_text(json.dumps(self.jdict), encoding="utf-8")
+            mapped, _ = self.crowd_evaluator.prepare_predictions(self.jdict, self.crowd_eval_files)
+            (self.save_dir / "predictions_coco.json").write_text(json.dumps(mapped), encoding="utf-8")
+            self.metrics.clear_stats()
+            return stats
         self.metrics.process(save_dir=self.save_dir, plot=self.args.plots, on_plot=self.on_plot)
         stats = self.metrics.results_dict
         if self.args.save_json and self.args.task == "detect":
@@ -512,7 +584,7 @@ class DetectionValidator(BaseValidator):
         """
         path = Path(pbatch["im_file"])
         stem = path.stem
-        image_id = int(stem) if stem.isnumeric() else stem
+        image_id = stem if self.crowd_evaluator is not None else int(stem) if stem.isnumeric() else stem
         box = ops.xyxy2xywh(predn["bboxes"])  # xywh
         box[:, :2] -= box[:, 2:] / 2  # xy center to top-left corner
         for b, s, c in zip(box.tolist(), predn["conf"].tolist(), predn["cls"].tolist()):
@@ -547,6 +619,22 @@ class DetectionValidator(BaseValidator):
         Returns:
             (dict[str, Any]): Updated statistics dictionary with COCO/LVIS evaluation results.
         """
+        if self.crowd_evaluator is not None:
+            if self.crowd_eval_result is None:
+                result, policy = self.crowd_evaluator.evaluate(
+                    self.jdict, self.crowd_eval_files, self.metrics, logger=LOGGER.info
+                )
+                policy.update(
+                    prediction_confidence=self.args.conf,
+                    nms_iou=None if self.end2end else self.args.iou,
+                    head="one2one_nms_free" if self.end2end else "one2many_nms",
+                )
+                (self.save_dir / "crowd_evaluation.json").write_text(
+                    json.dumps({"policy": policy, "metrics": result}, indent=2), encoding="utf-8"
+                )
+                self.crowd_eval_result = result
+            stats.update(self.crowd_eval_result)
+            return stats
         if self.gdict:
             predictions = iter(self.jdict)
             pred_json = [

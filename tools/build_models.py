@@ -12,6 +12,8 @@ VARIANTS = ("decision", "easy", "mid", "early", "data", "defa", "deyolo")
 
 def build(variant, scale="n"):
     """Compose official YOLO26 stages with the selected YOLOFuse fusion topology."""
+    if variant not in VARIANTS:
+        raise ValueError(f"Unknown fusion variant {variant!r}; choose from {VARIANTS}")
     official = yaml.safe_load(SOURCE.read_text())
     layers, mapping = [], {}
 
@@ -75,10 +77,11 @@ def build(variant, scale="n"):
                     fused[level] = add([joined, 2, "C3k2", [width, True]])
             outputs = [fused[i] for i in (4, 6, 10)] if variant == "easy" else neck(fused)
     add([outputs, 1, "Detect", ["nc"]])
+    head_scales = [0, 0, 1, 1, 2, 2] if variant == "decision" else [0, 1, 2]
     config = dict(nc=4, channels=6, ch=6, rgbir=True, scale=scale,
                   end2end=True, reg_max=1, scales=official["scales"],
                   fusion=variant, pretrained_layers=mapping,
-                  pretrained_head_scales=[0, 0, 1, 1, 2, 2] if variant == "decision" else [0, 1, 2],
+                  pretrained_head_scales=head_scales,
                   backbone=layers[:boundary], head=layers[boundary:])
     return config
 

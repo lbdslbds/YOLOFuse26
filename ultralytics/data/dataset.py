@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 from collections import defaultdict
+from hashlib import sha256
 from itertools import repeat
 from multiprocessing.pool import ThreadPool
 from pathlib import Path
@@ -109,6 +110,13 @@ class YOLODataset(BaseDataset):
         self.use_keypoints = task == "pose"
         self.use_obb = task == "obb"
         self.data = data
+        self.crowd_labels = self.data.get("crowd_labels")
+        if self.crowd_labels:
+            if task != "detect" or type(self) is not YOLODataset:
+                raise ValueError("crowd_labels is supported only for YOLODataset task='detect'")
+            self.crowd_labels = Path(self.crowd_labels)
+            if not self.crowd_labels.is_absolute():
+                self.crowd_labels = Path(self.data.get("path", ".")) / self.crowd_labels
         nkpt, ndim = self.data.get("kpt_shape", (0, 0))
         if self.use_keypoints and (nkpt <= 0 or ndim not in {2, 3}):  # checked before the label cache is consulted
             raise ValueError(
@@ -171,6 +179,19 @@ class YOLODataset(BaseDataset):
             (list[str]): List of label file paths.
         """
         self.label_files = img2label_paths(self.im_files)
+        if self.crowd_labels:
+            self.crowd_files = {}
+            for image, label in zip(self.im_files, self.label_files):
+                parts = Path(label).parts
+                if "labels" not in parts:
+                    raise ValueError(f"crowd_labels requires a labels directory in the label path: {label}")
+                index = len(parts) - 1 - parts[::-1].index("labels")
+                crowd_file = self.crowd_labels.joinpath(*parts[index + 1 :])
+                if crowd_file.resolve() == Path(label).resolve():
+                    raise ValueError("crowd_labels must be separate from ordinary labels")
+                if not crowd_file.is_file():
+                    raise FileNotFoundError(f"Missing crowd sidecar (create an empty file when no crowd): {crowd_file}")
+                self.crowd_files[image] = str(crowd_file)
         return self.label_files
 
     def get_cache_hash(self) -> str:
@@ -182,6 +203,13 @@ class YOLODataset(BaseDataset):
         # add_polygon_background() class is not a label class, so segment and semantic share one cache
         nc = self.data.get("bg_class_idx") or len(self.data["names"])
         scan_args = (self.use_keypoints, nc, self.data.get("kpt_shape"), self.single_cls)
+        if self.crowd_labels:
+            # Hash the bytes: a same-size sidecar edit must also invalidate the cached regions.
+            digest = sha256()
+            for crowd_file in self.crowd_files.values():
+                digest.update(crowd_file.encode())
+                digest.update(Path(crowd_file).read_bytes())
+            return get_hash(self.label_files + self.im_files + [str(scan_args), "crowd-v1", digest.hexdigest()])
         return get_hash(self.label_files + self.im_files + [str(scan_args)])
 
     def scan_summary(self, nf: int, nm: int, ne: int, nc: int) -> str:
@@ -240,6 +268,26 @@ class YOLODataset(BaseDataset):
             if im_file
             else None
         )
+        if label is not None and self.crowd_labels:
+            if segments:
+                raise ValueError(f"crowd_labels requires ordinary five-column detection labels: {im_file}")
+            crowd_file = self.crowd_files[im_file]
+            rows = [line.split() for line in Path(crowd_file).read_text(encoding="utf-8").splitlines() if line.strip()]
+            try:
+                if any(len(row) != 5 for row in rows):
+                    raise ValueError("each row must contain class x_center y_center width height")
+                crowd = np.asarray(rows, dtype=np.float32).reshape(-1, 5)
+                if not np.isfinite(crowd).all():
+                    raise ValueError("values must be finite")
+                classes, boxes = crowd[:, 0], crowd[:, 1:]
+                if ((classes < 0) | (classes >= len(self.data["names"])) | (classes % 1 != 0)).any():
+                    raise ValueError("classes must be nonnegative integer dataset class IDs")
+                if ((boxes < 0) | (boxes > 1)).any() or (boxes[:, 2:] <= 0).any():
+                    raise ValueError("boxes must be normalized xywh in [0, 1], with positive width and height")
+            except (ValueError, TypeError) as error:
+                raise ValueError(f"Invalid crowd sidecar {crowd_file}: {error}") from error
+            label["crowd_cls"] = crowd[:, :1]
+            label["crowd_bboxes"] = crowd[:, 1:]
         return label, nm_f, nf_f, ne_f, nc_f, msg
 
     def verify_labels(self, labels: list[dict], cache_path: Path) -> None:
@@ -331,6 +379,11 @@ class YOLODataset(BaseDataset):
             (Compose): Composed transforms.
         """
         if self.augment:
+            if self.crowd_labels:
+                if hyp.copy_paste or hyp.cutmix:
+                    raise ValueError("crowd_labels requires copy_paste=0 and cutmix=0; these transforms cannot preserve crowd regions")
+                if getattr(hyp, "augmentations", None):
+                    raise ValueError("crowd_labels does not support custom Albumentations augmentations; use the built-in geometric transforms")
             hyp.mosaic = hyp.mosaic if self.augment and not self.rect else 0.0
             hyp.mixup = hyp.mixup if self.augment and not self.rect else 0.0
             hyp.cutmix = hyp.cutmix if self.augment and not self.rect else 0.0
@@ -350,9 +403,22 @@ class YOLODataset(BaseDataset):
                 mask_ratio=hyp.mask_ratio,
                 mask_overlap=hyp.overlap_mask,
                 bgr=hyp.bgr if self.augment else 0.0,  # only affect training.
+                **({"crowd": True} if self.crowd_labels else {}),
             )
         )
         return transforms
+
+    def update_labels(self, include_class: list[int] | None) -> None:
+        """Apply class selection to ordinary targets and their separate crowd sidecars."""
+        super().update_labels(include_class)
+        if self.crowd_labels:
+            for label in self.labels:
+                if include_class is not None:
+                    keep = np.isin(label["crowd_cls"].reshape(-1), include_class)
+                    label["crowd_cls"] = label["crowd_cls"][keep]
+                    label["crowd_bboxes"] = label["crowd_bboxes"][keep]
+                if self.single_cls:
+                    label["crowd_cls"][:] = 0
 
     def build_text_transforms(self, transforms: Compose, max_samples: int) -> Compose:
         """Insert text augmentation for text-based subclasses providing `category_freq`.
@@ -413,6 +479,11 @@ class YOLODataset(BaseDataset):
         keypoints = label.pop("keypoints", None)
         bbox_format = label.pop("bbox_format")
         normalized = label.pop("normalized")
+        if self.crowd_labels:
+            crowd_cls = label.pop("crowd_cls")
+            crowd_bboxes = label.pop("crowd_bboxes")
+            label["cls"] = np.concatenate((label["cls"], -(crowd_cls + 1)), axis=0)
+            bboxes = np.concatenate((bboxes, crowd_bboxes), axis=0)
 
         # NOTE: do NOT resample oriented boxes
         segment_resamples = 100 if self.use_obb else 1000
@@ -447,14 +518,12 @@ class YOLODataset(BaseDataset):
                 value = torch.stack(value, 0)
             elif k == "visuals":
                 value = torch.nn.utils.rnn.pad_sequence(value, batch_first=True)
-            if k in {"masks", "keypoints", "bboxes", "cls", "segments", "obb"}:
+            if k in {"masks", "keypoints", "bboxes", "cls", "segments", "obb", "crowd_bboxes", "crowd_cls"}:
                 value = torch.cat(value, 0)
             new_batch[k] = value
-        if "batch_idx" in new_batch:
-            new_batch["batch_idx"] = list(new_batch["batch_idx"])
-            for i in range(len(new_batch["batch_idx"])):
-                new_batch["batch_idx"][i] += i  # add target image index for build_targets()
-            new_batch["batch_idx"] = torch.cat(new_batch["batch_idx"], 0)
+        for key in ("batch_idx", "crowd_batch_idx"):
+            if key in new_batch:
+                new_batch[key] = torch.cat([indices + i for i, indices in enumerate(new_batch[key])], 0)
         return new_batch
 
 

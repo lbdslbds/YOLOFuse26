@@ -303,6 +303,7 @@ CFG_BOOL_KEYS = frozenset(
         "show_boxes",
         "optimize",
         "dynamic",
+        "dynamo",
         "simplify",
         "nms",
         "profile",

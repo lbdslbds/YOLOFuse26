@@ -17,6 +17,9 @@ def initialize_from_yolo26(model, weights):
     if source_scale != target_scale:
         raise ValueError(f"Pretrained scale {source_scale!r} does not match requested scale {target_scale!r}")
     source_head, target_head = source.model[-1], target.model[-1]
+    head_scales = target.yaml["pretrained_head_scales"]
+    if len(head_scales) != target_head.nl:
+        raise ValueError("Pretrained head mapping must cover every target detection input")
     target_state = target.state_dict()
     copied, skipped = [], []
     for target_index, source_index in target.yaml["pretrained_layers"].items():
@@ -39,7 +42,12 @@ def initialize_from_yolo26(model, weights):
         dst = getattr(target_head, head_name, None)
         if src is None or dst is None:
             raise ValueError(f"Pretrained checkpoint does not contain both YOLO26 training heads: {head_name}")
-        for index, source_index in enumerate(target.yaml["pretrained_head_scales"]):
+        for index, source_index in enumerate(head_scales):
+            # Inputs without a pretrained counterpart retain their fresh initialization.
+            if source_index is None:
+                skipped.extend(f"model.{len(target.model) - 1}.{head_name}.{index}.{name}"
+                               for name in dst[index].state_dict())
+                continue
             for name, value in src[source_index].state_dict().items():
                 key = f"model.{len(target.model) - 1}.{head_name}.{index}.{name}"
                 # Dataset classes differ from COCO: do not infer a class correspondence by shape.
@@ -53,6 +61,7 @@ def initialize_from_yolo26(model, weights):
     # The public object-load API marks these weights for the trainer's model rebuild.
     model.load(target)
     return dict(source=str(Path(weights)), copied_tensors=len(copied), skipped_tensors=len(skipped),
+                new_head_inputs=[index for index, source in enumerate(head_scales) if source is None],
                 copied_parameters=sum(target_state[k].numel() for k in copied),
                 total_parameters=sum(v.numel() for v in target_state.values()),
                 classification="Dataset classification logits initialized afresh", layer_map=target.yaml["pretrained_layers"])

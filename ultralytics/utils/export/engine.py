@@ -95,6 +95,11 @@ def torch2onnx(
     input_names: list[str] | None = None,
     output_names: list[str] | None = None,
     dynamic: dict | None = None,
+    dynamo: bool = False,
+    dynamic_shapes: dict | tuple | None = None,
+    external_data: bool = False,
+    report: bool = False,
+    verify: bool = False,
 ) -> str:
     """Export a PyTorch model to ONNX format.
 
@@ -106,6 +111,11 @@ def torch2onnx(
         input_names (list[str] | None): List of input tensor names. Defaults to ``["images"]``.
         output_names (list[str] | None): List of output tensor names. Defaults to ``["output0"]``.
         dynamic (dict | None): Dictionary specifying dynamic axes for inputs and outputs.
+        dynamo (bool): Use the torch.export ONNX exporter (torch>=2.6), without legacy fallback.
+        dynamic_shapes (dict | tuple | None): Optional torch.export input shape constraints for Dynamo.
+        external_data (bool): Save large weights in a companion data file for Dynamo exports.
+        report (bool): Write the Dynamo exporter diagnostic report beside the ONNX file.
+        verify (bool): Ask the Dynamo exporter to compare its result with ONNX Runtime.
 
     Returns:
         (str): Path to the exported ONNX file.
@@ -115,6 +125,35 @@ def torch2onnx(
     if output_names is None:
         output_names = ["output0"]
     kwargs = {"dynamo": False} if TORCH_2_4 else {}
+    if dynamo:
+        if not check_version(TORCH_VERSION, ">=2.6.0"):
+            raise ValueError("dynamo=True requires torch>=2.6")
+        if opset < 18:
+            raise ValueError("dynamo=True requires opset>=18; use opset=18 or newer")
+        inputs = (im,) if isinstance(im, torch.Tensor) else tuple(im)
+        if dynamic and dynamic_shapes is None:
+            if len(input_names) != len(inputs):
+                raise ValueError("Dynamic Dynamo export needs an input name for every input tensor")
+            # Batch 0/1 examples specialize even with symbolic constraints. Trace a batch of two,
+            # then verify both batch=1 and batch>1 in ONNX Runtime before delivering an export.
+            inputs = tuple(
+                x.repeat(2, *([1] * (x.ndim - 1)))
+                if x.shape[0] == 1 and 0 in dynamic.get(name, {}) else x
+                for name, x in zip(input_names, inputs)
+            )
+            dims = {}
+            dynamic_shapes = tuple(
+                {axis: dims.setdefault(label, torch.export.Dim(label, min=1)) if axis == 0 else torch.export.Dim.AUTO
+                 for axis, label in dynamic.get(name, {}).items()}
+                for name in input_names
+            )
+        im = inputs[0] if isinstance(im, torch.Tensor) else inputs
+        kwargs = dict(dynamo=True, dynamic_shapes=dynamic_shapes, external_data=external_data,
+                      report=report, verify=verify, artifacts_dir=str(Path(output_file).parent))
+    else:
+        if dynamic_shapes is not None or report or verify or external_data:
+            raise ValueError("dynamic_shapes, external_data, report and verify require dynamo=True")
+        kwargs["dynamic_axes"] = dynamic
     torch.onnx.export(
         model,
         im,
@@ -122,7 +161,6 @@ def torch2onnx(
         opset_version=opset,
         input_names=input_names,
         output_names=output_names,
-        dynamic_axes=dynamic,
         **kwargs,
     )
     return str(output_file)

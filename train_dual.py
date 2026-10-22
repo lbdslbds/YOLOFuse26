@@ -28,6 +28,12 @@ def main():
     parser.add_argument("--device", default="0")
     parser.add_argument("--optimizer", default="MuSGD", choices=("MuSGD", "SGD", "AdamW", "auto"))
     parser.add_argument("--cache", choices=("false", "disk", "ram"), default="false")
+    parser.add_argument("--amp", action=argparse.BooleanOptionalAction, default=True,
+                        help="Enable AMP for new training runs (default); --no-amp uses FP32. Resume keeps checkpoint precision.")
+    parser.add_argument("--compile", nargs="?", const=True, default=None,
+                        type=lambda value: {"true": True, "false": False}.get(value.lower(), value),
+                        choices=(True, False, "default", "reduce-overhead", "max-autotune", "max-autotune-no-cudagraphs"),
+                        help="Enable torch.compile with Inductor; optionally select its mode.")
     parser.add_argument("--name")
     parser.add_argument("--fraction", type=float, default=1.0)
     parser.add_argument("--nms", action="store_true", help="Validate the one-to-many NMS head instead of the end-to-end head")
@@ -38,7 +44,8 @@ def main():
     if data.get("channels") != 6:
         raise SystemExit("The dataset YAML must contain channels: 6 for paired RGB+IR training.")
     if args.resume:
-        YOLO(str(args.resume)).train(resume=True, device=args.device)
+        options = {"compile": args.compile} if args.compile is not None else {}
+        YOLO(str(args.resume)).train(resume=True, device=args.device, **options)
         return
     config = ROOT / f"ultralytics/cfg/models/fuse26/yolo26{args.scale}-{args.fusion}.yaml"
     model = YOLO(str(config))
@@ -50,8 +57,8 @@ def main():
     model.train(data=args.data, epochs=args.epochs, imgsz=args.imgsz, batch=args.batch, workers=args.workers,
                 device=args.device, optimizer=args.optimizer, cache=False if args.cache == "false" else args.cache,
                 project=str(ROOT / "runs/train"), name=args.name or f"yolo26{args.scale}-{args.fusion}",
-                nms=None if args.nms else False, seed=0, deterministic=True, amp=False, patience=0,
-                close_mosaic=0, fraction=args.fraction, plots=True)
+                nms=None if args.nms else False, seed=0, deterministic=True, amp=args.amp, patience=0,
+                close_mosaic=0, fraction=args.fraction, plots=True, compile=args.compile or False)
 
 
 if __name__ == "__main__":

@@ -1254,6 +1254,11 @@ class RandomPerspective(BaseTransform):
         i = self.box_candidates(
             box1=instances.bboxes.T, box2=new_instances.bboxes.T, area_thr=0.01 if len(segments) else 0.10
         )
+        crowd = cls.reshape(-1) < 0
+        if crowd.any():
+            # Ignore regions retain every visible part, even when too thin/small for an ordinary object target.
+            boxes = new_instances.bboxes
+            i[crowd] = (boxes[crowd, 2:] > boxes[crowd, :2]).all(axis=1)
         labels["instances"] = new_instances[i]
         labels["cls"] = cls[i]
         return labels
@@ -2238,6 +2243,8 @@ class Albumentations(BaseTransform):
         """
         if self.transform is None or random.random() >= self.p:
             return labels
+        if self.contains_spatial and (labels["cls"] < 0).any():
+            raise ValueError("Spatial Albumentations transforms cannot preserve crowd ignore regions")
         if hasattr(self.transform, "set_random_seed") and self.transform.seed != torch.initial_seed():
             # albumentations>=1.4.21 has its own RNG; seed it from this process so each DataLoader worker differs
             self.transform.set_random_seed(torch.initial_seed())
@@ -2369,6 +2376,7 @@ class Format(BaseTransform):
         mask_overlap: bool = True,
         batch_idx: bool = True,
         bgr: float = 0.0,
+        crowd: bool = False,
     ):
         """Initialize the Format class with given parameters for image and instance annotation formatting.
 
@@ -2386,6 +2394,7 @@ class Format(BaseTransform):
                 False, return one mask per instance.
             batch_idx (bool): If True, keeps batch indexes.
             bgr (float): Probability of returning BGR images instead of RGB.
+            crowd (bool): Separate negatively encoded crowd regions from ordinary detection targets.
         """
         self.bbox_format = bbox_format
         self.normalize = normalize
@@ -2396,6 +2405,9 @@ class Format(BaseTransform):
         self.mask_overlap = mask_overlap
         self.batch_idx = batch_idx  # keep the batch indexes
         self.bgr = bgr
+        self.crowd = crowd
+        if crowd and (bbox_format != "xywh" or not normalize or return_mask or return_keypoint or return_obb):
+            raise ValueError("Crowd formatting requires normalized xywh detection targets")
 
     def get_params(self, labels: dict[str, Any]) -> dict[str, Any]:
         """Compute formatting parameters shared across image and instance formatting.
@@ -2494,6 +2506,15 @@ class Format(BaseTransform):
         # Then we can use collate_fn
         if self.batch_idx:
             labels["batch_idx"] = torch.zeros(nl)
+        if self.crowd:
+            crowd = labels["cls"].reshape(-1) < 0
+            labels["crowd_bboxes"] = labels["bboxes"][crowd]
+            labels["crowd_cls"] = -labels["cls"][crowd] - 1
+            labels["crowd_batch_idx"] = torch.zeros(int(crowd.sum()))
+            labels["bboxes"] = labels["bboxes"][~crowd]
+            labels["cls"] = labels["cls"][~crowd]
+            if self.batch_idx:
+                labels["batch_idx"] = labels["batch_idx"][~crowd]
         return labels
 
     def _format_img(self, img: np.ndarray) -> torch.Tensor:

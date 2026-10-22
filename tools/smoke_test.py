@@ -23,6 +23,7 @@ import yaml
 from ultralytics import YOLO, __version__
 from ultralytics.data.rgbir import read_rgbir_image, rgb_to_ir_path
 from fusion_weights import initialize_from_yolo26
+from tools.build_models import VARIANTS
 
 torch.set_num_threads(2)
 OUT = None
@@ -37,8 +38,12 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--device", default="cpu")
     parser.add_argument("--imgsz", type=int, default=128)
+    parser.add_argument("--fusion", choices=VARIANTS, default="decision")
     args = parser.parse_args()
-    OUT = ROOT / "reports" / ("cpu_smoke" if args.device == "cpu" else "gpu_smoke")
+    name = "cpu_smoke" if args.device == "cpu" else "gpu_smoke"
+    if args.fusion != "decision":
+        name += "_" + args.fusion.replace("-", "_")
+    OUT = ROOT / "reports" / name
     OUT.mkdir(parents=True, exist_ok=True)
     started = time.time()
     data = yaml.safe_load((ROOT / "configs/rgbir.yaml").read_text())
@@ -83,7 +88,7 @@ def main():
     yaml_file = OUT / "data.yaml"
     yaml_file.write_text(yaml.safe_dump(smoke_data, sort_keys=False))
 
-    model = YOLO(str(ROOT / "ultralytics/cfg/models/fuse26/yolo26n-decision.yaml"))
+    model = YOLO(str(ROOT / f"ultralytics/cfg/models/fuse26/yolo26n-{args.fusion}.yaml"))
     dump("pretrained_transfer.json", initialize_from_yolo26(model, ROOT / "weights/yolo26n.pt"))
     # Reuse the initialized weights through the normal trainer rebuild.
     initial = model.model.model[3].conv.weight.detach().clone()
@@ -129,7 +134,8 @@ def main():
         reference = reference[0] if isinstance(reference, tuple) else reference
     assert actual.shape[0] == 1 and actual.shape[-1] == 6
     torch.testing.assert_close(actual, reference, rtol=1e-3, atol=1e-3)
-    dump("result.json", dict(status="passed", device=args.device, cuda_available=torch.cuda.is_available(),
+    dump("result.json", dict(status="passed", device=args.device, fusion=args.fusion,
+                             cuda_available=torch.cuda.is_available(),
                              python=platform.python_version(), torch=torch.__version__, ultralytics=__version__,
                              elapsed_seconds=round(time.time() - started, 2), train_pairs=8, validation_pairs=4,
                              epochs=1, imgsz=args.imgsz, optimizer="MuSGD", checkpoint=str(best),

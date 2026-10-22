@@ -1,0 +1,21 @@
+# Active fixed split with class-specific crowd ignore enabled.
+{
+  "path": "/root/autodl-tmp/datasets_tvt_20261019",
+  "train": "images/train",
+  "val": "images/val",
+  "test": "images/test",
+  "channels": 6,
+  "nc": 4,
+  "names": {
+    "0": "person",
+    "1": "rider",
+    "2": "bicycle",
+    "3": "car"
+  },
+  "crowd_labels": "/root/autodl-tmp/datasets_tvt_20261019/crowd_labels",
+  "coco_annotations": {
+    "train": "/root/autodl-tmp/datasets_tvt_20261019/annotations/train.json",
+    "val": "/root/autodl-tmp/datasets_tvt_20261019/annotations/val.json",
+    "test": "/root/autodl-tmp/datasets_tvt_20261019/annotations/test.json"
+  }
+}

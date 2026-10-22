@@ -16,6 +16,14 @@ Migration and functional validation are complete. Detection accuracy after full 
 
 ## 📋 Changelog
 
+### 2026-10-23 · Compilation, export, and compute validation
+
+- Decision / DEFA passed CPU and CUDA Inductor execution, gradient comparisons, and real paired-data smoke training with `compile=True + AMP`, followed by validation with both heads.
+- Forced PyTorch SDPA FlashAttention for DEFA and verified CUDA forward/backward kernels.
+- Added ONNX `dynamo=True` / `dynamic_shapes`, verified with ONNX Runtime at multiple shapes and with the legacy exporter.
+- Retained original COCO crowd evaluation with fixed train/val/test splits of 5279/721/2676 pairs; measured full-resolution GFLOPs.
+- See [runtime and validation notes](docs/MODERN_RUNTIME.md) for the old environment's AMP check failure and successful PyTorch 2.12.1 comparison.
+
 ### 2026-10-17 · YOLO26 migration
 
 - Pinned the backbone to official `v8.4.180`, including the DFL-free YOLO26 head, one-to-one / one-to-many branches, and MuSGD.
@@ -46,6 +54,21 @@ Migration and functional validation are complete. Detection accuracy after full 
 | `deyolo` | Dual backbones, DEA attention from [DEYOLO](https://arxiv.org/abs/2412.04931), and a shared PAN | [yolo26n-deyolo.yaml](ultralytics/cfg/models/fuse26/yolo26n-deyolo.yaml) |
 
 Select a model size with `--scale n/s/m/l/x`. Runtime validation currently covers **n**; larger configurations have been generated but have not been individually validated. DEFA attention can consume substantial memory at high resolution; adjust the batch size to your GPU.
+
+## 📊 Model results and compute
+
+| Architecture | Modality | Precision (P) | Recall (R) | mAP@50 | mAP@50:95 | Model size (MB) | Compute (GFLOPs) |
+| --- | --- | --- | --- | --- | --- | --- | ---: |
+| YOLO26n (baseline) | RGB | | | | | | |
+| YOLO26n-Data | RGB+IR | | | | | | |
+| YOLO26n-Decision | RGB+IR | | | | | | 10.626 |
+| YOLO26n-Early | RGB+IR | | | | | | |
+| YOLO26n-Mid | RGB+IR | | | | | | |
+| YOLO26n-Easy | RGB+IR | | | | | | |
+| YOLO26n-DEFA | RGB+IR | | | | | | 37.470 |
+| YOLO26n-DEYOLO | RGB+IR | | | | | | |
+
+Measured at nano scale, 4 classes, batch=1, with one 640×640 RGB+IR pair (six channels). Uses built-in model fusion and one deployment head, and THOP 2.2.3's `GFLOPs = 2 × MACs / 1e9` convention, including attention and dynamic-kernel products. Preprocessing and NMS are excluded. Both heads have identical arithmetic counts. Accuracy and checkpoint file size remain blank pending corresponding full-training results. See [method and reproduction](docs/MODERN_RUNTIME.md#gflops-口径与复现).
 
 ## 🚀 Quick start
 
@@ -90,11 +113,14 @@ python train_dual.py --data configs/rgbir.yaml --fusion decision --scale n --dev
 
 # Easy feature fusion
 python train_dual.py --data configs/rgbir.yaml --fusion easy --scale n --device 0 --epochs 100 --batch 16
+
 ```
 
 The default pretrained path is `weights/yolo26{scale}.pt`. Ultralytics downloads the official asset if it is missing. Use `--weights /path/to/yolo26n.pt` for a local checkpoint or `--scratch` for random initialization. The pretrained scale must match `--scale`; classification outputs are initialized for the target dataset.
 
-Defaults: `imgsz=640`, `optimizer=MuSGD`, `seed=0`, `amp=False`, `cache=False`. Options include `--cache disk`, `--cache ram`, `--optimizer SGD`, and `--device cpu`.
+Defaults: `imgsz=640`, `optimizer=MuSGD`, `seed=0`, `amp=True`, `cache=False`. New runs enable automatic mixed precision with the trainer's compatibility checks; use `--no-amp` for FP32. Options include `--cache disk`, `--cache ram`, `--optimizer SGD`, and `--device cpu`. Resumed runs retain the checkpoint's precision setting.
+
+Add `--compile` to training or validation to enable `torch.compile`. See [runtime notes](docs/MODERN_RUNTIME.md) for the tested PyTorch 2.12.1 environment and modern ONNX export. See [crowd-aware detection](docs/CROWD.md) for the original-COCO evaluation and crowd training policy.
 
 ```bash
 # Resume a checkpoint produced by this project
@@ -154,6 +180,8 @@ datasets/
 ## 🧪 Validation and reproduction
 
 Migration validation passed 14 CPU and 7 CUDA regression cases, covering gradients through both modalities, both inference heads, caching, serialization, missing IR, and single RGB compatibility. Decision / Easy passed short training, validation, and inference at 640 resolution. Six-channel TorchScript export passed numerical parity checks.
+
+The 2026-10-23 validation on PyTorch 2.12.1 covers CPU/CUDA compilation, FlashAttention forward/backward, Decision/DEFA smoke training and both validation heads, plus 10 ONNX numerical export checks. See [runtime notes](docs/MODERN_RUNTIME.md) for commands and coverage. Accuracy changes require a separate full-training comparison.
 
 ```bash
 python -m pytest -c tests/pytest.ini tests/test_rgbir26.py -q

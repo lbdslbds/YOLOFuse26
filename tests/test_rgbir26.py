@@ -30,7 +30,8 @@ def test_yolo26_both_modalities_train_and_both_heads_infer(variant):
     model = DetectionModel(str(FUSE / f"yolo26n-{variant}.yaml"), verbose=False).to(DEVICE)
     assert model.yaml["channels"] == 6
     assert model.model[-1].reg_max == 1
-    assert model.stride.tolist() == ([8, 8, 16, 16, 32, 32] if variant == "decision" else [8, 16, 32])
+    expected = {"decision": [8, 8, 16, 16, 32, 32]}
+    assert model.stride.tolist() == expected.get(variant, [8, 16, 32])
     model.args = get_cfg(overrides={"epochs": 2})
     image = torch.rand(2, 6, 96, 96, device=DEVICE, requires_grad=True)
     batch = {"img": image, "batch_idx": torch.tensor([0, 1], device=DEVICE), "cls": torch.tensor([[0.], [2.]], device=DEVICE),
@@ -152,13 +153,27 @@ def test_pretrained_branches_are_mapped_by_role(tmp_path):
         source.model.model[0].conv.weight.fill_(0.125)
     path = tmp_path / "yolo26n.pt"
     source.save(path)
+    serialized_source = YOLO(str(path)).model.float()
     target = YOLO(str(FUSE / "yolo26n-decision.yaml"))
+    head = target.model.model[-1]
     report = initialize_from_yolo26(target, path)
     assert report["copied_tensors"] > 200
     assert target.ckpt is not None  # public .train() preserves initialization
     for dst, src in target.model.yaml["pretrained_layers"].items():
         if src == 0:
             assert torch.equal(target.model.model[dst].conv.weight, source.model.model[0].conv.weight)
+    for name in ("cv2", "one2one_cv2"):
+        for index, source_index in enumerate(target.model.yaml["pretrained_head_scales"]):
+            actual = getattr(head, name)[index].state_dict()
+            original = getattr(serialized_source.model[-1], name)[source_index].state_dict()
+            assert all(torch.equal(actual[key], value) for key, value in original.items())
+
+
+def test_model_builder_rejects_unknown_fusion_variant():
+    from tools.build_models import build
+
+    with pytest.raises(ValueError, match="Unknown fusion variant"):
+        build("unsupported")
 
 
 def test_wrong_dataset_channels_fail():

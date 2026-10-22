@@ -665,7 +665,10 @@ def get_flops(model, imgsz=640):
         min_cells = max(
             (-(-m.num_queries * 3 // (4**m.nl - 1)) for m in model.modules() if isinstance(m, RTDETRDecoder)), default=1
         )
-        im = torch.empty((1, p.shape[1], *imgsz), device=p.device, dtype=p.dtype)  # input image in BCHW format
+        # Modality selectors feed three-channel branches from a six-channel model input.
+        # The first convolution's in_channels therefore need not describe the external input.
+        channels = getattr(model, "yaml", {}).get("channels", p.shape[1])
+        im = torch.empty((1, channels, *imgsz), device=p.device, dtype=p.dtype)  # input image in BCHW format
         return thop.profile(model, inputs=[im], stride=stride, min_cells=min_cells, verbose=False)[0] / 1e9 * 2
     except Exception:
         return 0.0

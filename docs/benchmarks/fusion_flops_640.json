@@ -1,0 +1,127 @@
+{
+  "convention": "GFLOPs = 2 * full-resolution THOP MACs / 1e9",
+  "includes": "THOP-counted products, normalization, pooling and attention softmax",
+  "excludes": "preprocessing, NMS, TopK/comparisons, memory movement and backward",
+  "measured_at": "2026-10-23",
+  "input_shape": [
+    1,
+    6,
+    640,
+    640
+  ],
+  "nc": 4,
+  "scale": "n",
+  "device": "cpu",
+  "inference": "eval, built-in fuse(), one retained deployment head",
+  "thop_version": "2.2.3",
+  "torch_version": "2.12.1+cu130",
+  "models": [
+    {
+      "fusion": "decision",
+      "macs": 5313024000,
+      "gflops": 10.626048,
+      "parameters": 4751232,
+      "attention": {},
+      "dynamic_contraction": {},
+      "dense_product_cross_check_gflops": 10.626048,
+      "thop_additional_non_product_gflops": 0.0,
+      "dense_product_operator_flops": {
+        "aten.convolution": 10380288000,
+        "aten.bmm": 245760000
+      },
+      "verified_heads": [
+        "one2many",
+        "one2one"
+      ]
+    },
+    {
+      "fusion": "defa",
+      "macs": 18734957150,
+      "gflops": 37.4699143,
+      "parameters": 5576185,
+      "attention": {
+        "model.25.cross_attn": {
+          "batch": 1,
+          "query_tokens": 6400,
+          "key_tokens": 6400,
+          "channels": 128,
+          "projection_macs": 419430400,
+          "qk_av_macs": 10485760000,
+          "softmax_thop_units": 982988800,
+          "total_thop_macs": 11888179200
+        },
+        "model.26.cross_attn": {
+          "batch": 1,
+          "query_tokens": 1600,
+          "key_tokens": 1600,
+          "channels": 128,
+          "projection_macs": 104857600,
+          "qk_av_macs": 655360000,
+          "softmax_thop_units": 61427200,
+          "total_thop_macs": 821644800
+        },
+        "model.27.cross_attn": {
+          "batch": 1,
+          "query_tokens": 400,
+          "key_tokens": 400,
+          "channels": 256,
+          "projection_macs": 104857600,
+          "qk_av_macs": 81920000,
+          "softmax_thop_units": 3836800,
+          "total_thop_macs": 190614400
+        }
+      },
+      "dynamic_contraction": {
+        "model.25": {
+          "input_shape": [
+            1,
+            128,
+            80,
+            80
+          ],
+          "kernel_size": 5,
+          "einsum_macs": 20480000
+        },
+        "model.26": {
+          "input_shape": [
+            1,
+            128,
+            40,
+            40
+          ],
+          "kernel_size": 5,
+          "einsum_macs": 5120000
+        },
+        "model.27": {
+          "input_shape": [
+            1,
+            256,
+            20,
+            20
+          ],
+          "kernel_size": 5,
+          "einsum_macs": 2560000
+        }
+      },
+      "dense_product_cross_check_gflops": 35.362143232,
+      "thop_additional_non_product_gflops": 2.107771067999998,
+      "dense_product_operator_flops": {
+        "aten.convolution": 11417132032,
+        "aten.bmm": 1184358400,
+        "aten._scaled_dot_product_flash_attention_for_cpu": 22446080000,
+        "aten.addmm": 314572800
+      },
+      "verified_heads": [
+        "one2many",
+        "one2one"
+      ]
+    }
+  ],
+  "code_sha256": {
+    "tools/profile_fusion_flops.py": "0b8ad9854a2bdaf8ce2a35fd0bb1b291a2b00756e70bd692fdd3e8b012334803",
+    "ultralytics/utils/torch_utils.py": "7caad9f84b046006e58e6be36d61fffdc6fa7fda5c565089e82d9c77004b17e4",
+    "ultralytics/nn/modules/DEFA.py": "181c8f50ce41a5a0c73e6b87c610dd8071b12063c9f3ef146c6b8738301038d7",
+    "ultralytics/cfg/models/fuse26/yolo26n-decision.yaml": "4444b69fee90d185308dce9313b325f1007950ada15d0db104fe47c45442c924",
+    "ultralytics/cfg/models/fuse26/yolo26n-defa.yaml": "17adc984a676495c47e56ef5b604f3b1c8246e41e4999d9ec0b67b70194d2c30"
+  }
+}

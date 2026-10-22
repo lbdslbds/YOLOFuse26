@@ -416,6 +416,39 @@ class v8DetectionLoss:
             # pred_dist = (pred_dist.view(b, a, c // 4, 4).softmax(2) * self.proj.type(pred_dist.dtype).view(1, 1, -1, 1)).sum(2)
         return dist2bbox(pred_dist, anchor_points, xywh=False)
 
+    def crowd_classification_mask(self, batch, points, fg_mask, scale_tensor):
+        """Ignore only unmatched anchors' crowd-class negatives; ordinary positive anchors take precedence.
+
+        Crowd boxes are normalized xywh after the same augmentation as ordinary instances. This training
+        rule uses anchor centers inside the crowd rectangle; evaluation uses the original COCO crowd rule.
+        """
+        mask = torch.ones((*fg_mask.shape, self.nc), dtype=torch.bool, device=self.device)
+        keys = ("crowd_bboxes", "crowd_cls", "crowd_batch_idx")
+        if not any(key in batch for key in keys):
+            return mask
+        if not all(key in batch for key in keys):
+            raise ValueError("Crowd batches require crowd_bboxes, crowd_cls and crowd_batch_idx together")
+        boxes, classes, indices = (batch[key].to(self.device) for key in keys)
+        classes, indices = classes.reshape(-1), indices.reshape(-1)
+        if boxes.ndim != 2 or boxes.shape[1] != 4 or len(boxes) != len(classes) or len(boxes) != len(indices):
+            raise ValueError("Crowd boxes, classes and batch indices have inconsistent shapes")
+        if not len(boxes):
+            return mask
+        if (not torch.isfinite(boxes).all() or not torch.isfinite(classes).all()
+                or not torch.isfinite(indices).all() or (boxes < 0).any() or (boxes > 1).any()
+                or (boxes[:, 2:] <= 0).any() or (classes != classes.long()).any()
+                or (classes < 0).any() or (classes >= self.nc).any()
+                or (indices != indices.long()).any() or (indices < 0).any() or (indices >= len(fg_mask)).any()):
+            raise ValueError("Invalid normalized crowd boxes, class IDs or batch indices")
+        boxes = xywh2xyxy(boxes * scale_tensor)
+        for image_index in indices.long().unique().tolist():
+            selected = indices == image_index
+            for category in classes[selected].long().unique().tolist():
+                regions = boxes[selected & (classes == category)]
+                inside = ((points[None] >= regions[:, None, :2]) & (points[None] <= regions[:, None, 2:])).all(-1).any(0)
+                mask[image_index, :, category] = ~(inside & ~fg_mask[image_index])
+        return mask
+
     def get_assigned_targets_and_loss(
         self, preds: dict[str, torch.Tensor], batch: dict[str, Any], **assign_kwargs
     ) -> tuple:
@@ -459,6 +492,10 @@ class v8DetectionLoss:
 
         # Cls loss with optional class weighting
         bce_loss = self.bce(pred_scores, target_scores.to(dtype))  # (bs, num_anchors, nc)
+        if "crowd_bboxes" in batch or "crowd_cls" in batch or "crowd_batch_idx" in batch:
+            bce_loss *= self.crowd_classification_mask(
+                batch, anchor_points * stride_tensor, fg_mask, imgsz[[1, 0, 1, 0]]
+            )
         if self.class_weights is not None:
             bce_loss *= self.class_weights
         loss[1] = bce_loss.sum() / target_scores_sum  # BCE
