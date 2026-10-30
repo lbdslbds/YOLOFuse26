@@ -6,6 +6,7 @@ from those labels: retain the source image/category IDs and crowd flags instead.
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 from pathlib import Path
@@ -56,11 +57,24 @@ class CrowdCOCOEvaluator:
         self.category_ids = set(category_ids)
         annotation_ids = set()
         for annotation in self.ground_truth["annotations"]:
+            if type(annotation["id"]) is not int:
+                raise ValueError("Original COCO annotation IDs must be integers")
             if annotation["id"] in annotation_ids:
                 raise ValueError("Duplicate original COCO annotation ID")
             annotation_ids.add(annotation["id"])
             if annotation["image_id"] not in image_ids or annotation["category_id"] not in self.category_ids:
                 raise ValueError("Original COCO annotation references an unknown image or category")
+        # COCO uses annotation IDs in its match arrays, with 0 reserved for 'unmatched'.
+        # Remap only non-positive IDs in a private copy, preserving the source annotation file,
+        # its hash, and all image/category IDs, boxes, areas and crowd/ignore flags.
+        self._evaluation_ground_truth = copy.deepcopy(self.ground_truth)
+        self.annotation_id_remapping = []
+        next_id = max(annotation_ids | {0}) + 1
+        for annotation in self._evaluation_ground_truth["annotations"]:
+            if annotation["id"] <= 0:
+                self.annotation_id_remapping.append({"source_id": annotation["id"], "evaluation_id": next_id})
+                annotation["id"] = next_id
+                next_id += 1
         self._coco = None
 
     def file_name(self, image_file):
@@ -108,11 +122,11 @@ class CrowdCOCOEvaluator:
         predictions, image_ids = self.prepare_predictions(predictions, image_files)
         if not image_ids:
             raise ValueError("No validation images were visited for COCO crowd evaluation")
-        self._coco = self._coco or COCO(self.ground_truth)
+        self._coco = self._coco or COCO(self._evaluation_ground_truth)
         detected = (
             self._coco.loadRes(predictions)
             if predictions
-            else COCO({**self.ground_truth, "annotations": []})
+            else COCO({**self._evaluation_ground_truth, "annotations": []})
         )
         evaluator = COCOeval_faster(self._coco, detected, iouType="bbox", print_function=logger)
         evaluator.params.imgIds = image_ids
@@ -181,6 +195,11 @@ class CrowdCOCOEvaluator:
             "evaluator": "faster_coco_eval.COCOeval_faster",
             "ground_truth": str(self.annotation_file.resolve()),
             "ground_truth_sha256": self.annotation_sha256,
+            "annotation_id_policy": (
+                "Preserve positive original IDs; remap non-positive IDs in source order to unused positive IDs "
+                "above the original maximum, in an evaluation-only copy"
+            ),
+            "annotation_id_remapping": self.annotation_id_remapping,
             "split": self.split,
             "images": len(image_ids),
             "image_ids": image_ids,

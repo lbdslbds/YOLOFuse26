@@ -2,6 +2,7 @@
 
 import copy
 import json
+import warnings
 from types import SimpleNamespace
 
 import pytest
@@ -73,8 +74,71 @@ def test_crowd_uses_ioa_multiple_matches_original_ids_and_actual_subset(coco):
     assert policy["crowd_regions"] == 1
     assert policy["non_crowd_instances"] == 2
     assert policy["max_detections"] == [1, 10, 300]
+    assert policy["annotation_id_remapping"] == []
     assert metrics.nt_per_class.tolist() == [1, 1]
     assert json.loads(coco[0].read_text()) == original
+
+
+@pytest.mark.parametrize("annotation_index", (0, 2))
+def test_zero_annotation_id_preserves_positive_target_and_crowd_matching(coco, annotation_index):
+    """An exact match to ID 0 must be a true positive; ID 0 crowds must still absorb detections."""
+    reference, _, _ = evaluate(coco)
+    path, data, names = coco
+    data["annotations"][annotation_index]["id"] = 0
+    path.write_text(json.dumps(data))
+    source_bytes = path.read_bytes()
+    original = copy.deepcopy(data)
+    evaluator = CrowdCOCOEvaluator(path, names)
+    metrics = DetMetrics(names)
+    with warnings.catch_warnings(record=True) as recorded:
+        warnings.simplefilter("always")
+        result, policy = evaluator.evaluate(predictions(), ["day_000000.jpg"], metrics, logger=lambda _: None)
+    assert not any("annotation id 0" in str(item.message).lower() for item in recorded)
+    assert result == pytest.approx(reference)
+    assert result["metrics/mAP50-95(B)"] == pytest.approx(1)
+    assert policy["annotation_id_remapping"] == [{"source_id": 0, "evaluation_id": 5}]
+    assert set(evaluator._coco.anns) == ({1, 2, 3, 4} - {annotation_index + 1}) | {5}
+    assert evaluator.ground_truth == original
+    assert path.read_bytes() == source_bytes
+
+
+def test_nonpositive_annotation_ids_are_collision_free_without_changing_annotation_semantics(coco):
+    path, data, names = coco
+    source_ids = [0, 7, -3, 1]
+    for annotation, source_id in zip(data["annotations"], source_ids):
+        annotation["id"] = source_id
+    path.write_text(json.dumps(data))
+    source_bytes = path.read_bytes()
+    evaluator = CrowdCOCOEvaluator(path, names)
+    assert [a["id"] for a in evaluator._evaluation_ground_truth["annotations"]] == [8, 7, 9, 1]
+    assert evaluator.annotation_id_remapping == [
+        {"source_id": 0, "evaluation_id": 8}, {"source_id": -3, "evaluation_id": 9}
+    ]
+    for original, normalized in zip(data["annotations"], evaluator._evaluation_ground_truth["annotations"]):
+        assert {k: v for k, v in original.items() if k != "id"} == {
+            k: v for k, v in normalized.items() if k != "id"
+        }
+    assert evaluator.ground_truth == data
+    assert path.read_bytes() == source_bytes
+    result, _, _ = evaluate(coco)
+    assert result["metrics/mAP50-95(B)"] == pytest.approx(1)
+
+
+@pytest.mark.parametrize("annotation_id", ("0", 1.5, True))
+def test_noninteger_annotation_ids_fail_before_native_matching(coco, annotation_id):
+    path, data, names = coco
+    data["annotations"][0]["id"] = annotation_id
+    path.write_text(json.dumps(data))
+    with pytest.raises(ValueError, match="IDs must be integers"):
+        CrowdCOCOEvaluator(path, names)
+
+
+def test_duplicate_zero_annotation_ids_are_rejected_not_silently_reindexed(coco):
+    path, data, names = coco
+    data["annotations"][0]["id"] = data["annotations"][1]["id"] = 0
+    path.write_text(json.dumps(data))
+    with pytest.raises(ValueError, match="Duplicate original COCO annotation ID"):
+        CrowdCOCOEvaluator(path, names)
 
 
 def test_wrong_class_inside_crowd_is_not_ignored(coco):
