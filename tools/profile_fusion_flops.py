@@ -42,6 +42,10 @@ def attention_cost(module, inputs, output):
 
 def profile_model(fusion, scale='n', imgsz=640, nc=4, head='one2many', cross_check=False):
     """Return arithmetic counts for one fused deployment head on CPU."""
+    if fusion == "defa-mala-core":
+        raise NotImplementedError(
+            "DEFA-MALA-core profiling is not implemented; the Softmax attention counter is not applicable"
+        )
     rules = import_module('thop.profile')
     if nn.MultiheadAttention not in rules.register_hooks or not getattr(rules, '_COUNTS_FUNCTIONS', False):
         raise RuntimeError('Install ultralytics-thop>=2.2.3 for attention and functional-product counting')

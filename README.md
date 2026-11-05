@@ -10,11 +10,17 @@
   <a href="https://github.com/lbdslbds/YOLOFuse26/stargazers"><img src="https://img.shields.io/github/stars/lbdslbds/YOLOFuse26?style=social" alt="GitHub stars"></a>
 </p>
 
-**YOLOFuse26** 延续 [YOLOFuse](https://github.com/WangQvQ/YOLOFuse) 的双模态融合思路，将模型基座迁移到 **Ultralytics 8.4.180 / YOLO26**，支持可见光（RGB）与红外（IR）图像的联合训练、验证和推理。项目提供 7 种融合策略，适用于低照度感知、安防监控、灾害救援及工业巡检等多模态目标检测研究。
+**YOLOFuse26** 延续 [YOLOFuse](https://github.com/WangQvQ/YOLOFuse) 的双模态融合思路，将模型基座迁移到 **Ultralytics 8.4.180 / YOLO26**，支持可见光（RGB）与红外（IR）图像的联合训练、验证和推理。项目提供 8 种融合策略，适用于低照度感知、安防监控、灾害救援及工业巡检等多模态目标检测研究。
 
-当前已完成迁移和功能验证；完整训练后的检测精度仍需在目标数据集上评估。
+当前已完成迁移和功能验证，并记录 DEFA 与 DEFA-MALA-core 的完整训练对照。下方精度仅代表固定数据划分上的单次实验；方法和限制见 [DEFA-MALA-core 说明](docs/DEFA_MALA_CORE.md)。
 
 ## 📋 更新日志
+
+### 2026-11-06 · DEFA-MALA-core 与完整训练对照
+
+- 新增 `defa-mala-core`：仅替换 DEFA 的 P3/P4/P5 跨模态注意力核心，保留动态卷积、门控、残差与增强；提供 `n/s/m/l/x` 五种配置，当前共 40 份融合 YAML。
+- nano 规模完成 100 轮及上限 300 轮、patience=30 的训练对照，实际启用 AMP 和 Inductor 编译。最新早停实验中 MALA-core 的验证、测试 mAP 均低于 DEFA，不宣称精度提升。
+- 训练入口支持 `--patience`，默认 0 保持关闭早停；续训沿用 checkpoint 保存的设置。实验结果、评估口径和复现限制见 [详细说明](docs/DEFA_MALA_CORE.md)。
 
 ### 2026-10-23 · 编译、导出与运算量验证
 
@@ -51,6 +57,7 @@
 | `mid` | P3/P4/P5 特征融合后进入共享 PAN | [yolo26n-mid.yaml](ultralytics/cfg/models/fuse26/yolo26n-mid.yaml) |
 | `easy` | 双主干 P3/P4/P5 特征分别融合后直接检测 | [yolo26n-easy.yaml](ultralytics/cfg/models/fuse26/yolo26n-easy.yaml) |
 | `defa` | 双主干 + 动态增强融合注意力 + 共享 PAN | [yolo26n-defa.yaml](ultralytics/cfg/models/fuse26/yolo26n-defa.yaml) |
+| `defa-mala-core` | DEFA 内部改用 MALA 核心交叉注意力；保留动态卷积、门控与增强 | [yolo26n-defa-mala-core.yaml](ultralytics/cfg/models/fuse26/yolo26n-defa-mala-core.yaml) |
 | `deyolo` | 双主干 + [DEYOLO](https://arxiv.org/abs/2412.04931) 的 DEA 注意力 + 共享 PAN | [yolo26n-deyolo.yaml](ultralytics/cfg/models/fuse26/yolo26n-deyolo.yaml) |
 
 使用 `--scale n/s/m/l/x` 选择模型尺寸。当前运行验证覆盖 **n**；其余尺寸已生成配置，尚未逐一验证。DEFA 的跨模态注意力开销较大，高分辨率训练时需按显存调整 batch。
@@ -65,10 +72,15 @@
 | YOLO26n-Early（早期特征融合） | RGB+IR | | | | | | |
 | YOLO26n-Mid（中期特征融合） | RGB+IR | | | | | | |
 | YOLO26n-Easy（极简融合） | RGB+IR | | | | | | |
-| YOLO26n-DEFA（动态增强融合注意力） | RGB+IR | | | | | | 37.470 |
+| YOLO26n-DEFA（动态增强融合注意力） | RGB+IR | 81.11 | 76.50 | 81.31 | 57.04 | | 37.470 |
+| YOLO26n-DEFA-MALA-core | RGB+IR | 82.33 | 74.50 | 79.68 | 55.84 | | |
 | YOLO26n-DEYOLO | RGB+IR | | | | | | |
 
-口径：n 尺寸、4 类、batch=1、每对 RGB+IR 均为 640×640；完整六通道前向、融合 Conv/BN 并仅保留一个部署检测头，使用 THOP 2.2.3 的 `GFLOPs = 2 × MACs / 10^9`，包含注意力与动态核运算，不含预处理和 NMS。one-to-one 与 one-to-many 的计算量一致。精度和模型文件大小等待对应完整训练结果，空白项保持未报告；短程功能测试不用于填写精度。计数明细及命令见 [运行与测试说明](docs/MODERN_RUNTIME.md#gflops-口径与复现)。
+检测指标单位为 %，来自固定 RGB+IR 数据划分的独立 **test** 评估，train/val/test 分别为 5279/721/2676 对图像，类别为 person、rider、bicycle、car。两种模型均以 nano、640 输入、batch=16、SGD、AMP 和 `compile=True` 训练，上限 300 轮、patience=30。DEFA/MALA-core 分别在第 219/285 轮停止，按验证集 mAP50–95 选择第 189/255 轮 checkpoint。
+
+最终评估采用 FP32 eager、**one-to-many + NMS**、`conf=0.001`、`iou=0.7`、`max_det=300` 和 COCO crowd 匹配；P/R 取各类别 COCO IoU=0.50 插值网格上的最大 F1 点。每种配置仅一次实验；MALA-core 在第 144 轮后续训，新增融合参数的相同初始化未经证明，不能据此宣称统计显著或普遍优劣。完整验证结果及限制见 [实验说明](docs/DEFA_MALA_CORE.md#recorded-experiments)。原始数据、精确划分清单和训练 checkpoint 未随仓库提供；精确复现这些成绩需要原实验资产，示例命令仅提供可用于自有数据的训练设置。
+
+计算量另按 n 尺寸、4 类、batch=1、每对 RGB+IR 均为 640×640 核算：完整六通道前向、融合 Conv/BN 并仅保留一个部署检测头，使用 THOP 2.2.3 的 `GFLOPs = 2 × MACs / 10^9`，包含注意力与动态核运算，不含预处理和 NMS。已核算的 Decision/DEFA 两种检测头计算量一致；MALA-core 尚无专用计数。模型文件大小和其他空白项保持未报告，短程功能测试不用于填写精度。计数明细及命令见 [运行与测试说明](docs/MODERN_RUNTIME.md#gflops-口径与复现)。
 
 ## 🚀 快速开始
 
@@ -114,11 +126,14 @@ python train_dual.py --data configs/rgbir.yaml --fusion decision --scale n --dev
 # Easy 特征融合
 python train_dual.py --data configs/rgbir.yaml --fusion easy --scale n --device 0 --epochs 100 --batch 16
 
+# MALA-core：最多 300 轮，验证指标连续 30 轮未改善时早停
+python train_dual.py --data configs/rgbir-tvt.yaml --fusion defa-mala-core --scale n --device 0 --epochs 300 --patience 30 --imgsz 640 --batch 16 --workers 4 --optimizer SGD --cache disk --amp --compile --nms
+
 ```
 
 预训练权重默认位于 `weights/yolo26{scale}.pt`，缺失时由 Ultralytics 下载官方权重。可以用 `--weights /path/to/yolo26n.pt` 指定本地文件，或用 `--scratch` 从头训练。预训练权重尺寸必须与 `--scale` 一致；分类输出层按目标数据集重新初始化。
 
-默认参数：`imgsz=640`、`optimizer=MuSGD`、`seed=0`、`amp=True`、`cache=False`。新训练默认启用 AMP 混合精度，由训练器执行兼容性检查；使用 `--no-amp` 可切换为 FP32。支持 `--cache disk`、`--cache ram`、`--optimizer SGD` 和 `--device cpu`。续训沿用 checkpoint 中的精度设置。
+默认参数：`imgsz=640`、`optimizer=MuSGD`、`seed=0`、`amp=True`、`cache=False`、`patience=0`。新训练可用 `--patience N` 设置早停等待轮数，0 表示关闭；续训沿用 checkpoint 保存的 patience。新训练默认启用 AMP 混合精度，由训练器执行兼容性检查；使用 `--no-amp` 可切换为 FP32。支持 `--cache disk`、`--cache ram`、`--optimizer SGD` 和 `--device cpu`。续训沿用 checkpoint 中的精度设置。
 
 训练或验证可加 `--compile` 启用 `torch.compile`。PyTorch 2.12.1 环境和新版 ONNX 导出示例见 [运行与测试说明](docs/MODERN_RUNTIME.md)。启用原始 COCO crowd 训练与评估的数据配置及政策见 [Crowd 说明](docs/CROWD.md)。
 
@@ -187,7 +202,7 @@ datasets/
 python -m pytest -c tests/pytest.ini tests/test_rgbir26.py -q
 ```
 
-GPU 测试、可选数据集集成测试及验证范围见 [迁移与验证说明](docs/MIGRATION.md)。当前未发布完整训练后的融合权重或目标数据集精度结果。
+GPU 测试、可选数据集集成测试及验证范围见 [迁移与验证说明](docs/MIGRATION.md)。DEFA/MALA-core 完整训练的汇总指标已列于上表；训练权重未随仓库发布，原 DEFA 的导出与 FlashAttention 验证不能直接作为 MALA-core 的验证结果。
 
 ## ⚡ 云端部署
 
@@ -199,7 +214,7 @@ GPU 测试、可选数据集集成测试及验证范围见 [迁移与验证说�
 YOLOFuse26/
 ├── configs/rgbir.yaml                  # 双模态数据集模板
 ├── docs/MIGRATION.md                   # 迁移设计与功能验证范围
-├── ultralytics/cfg/models/fuse26/      # 35 份 YOLO26 融合配置
+├── ultralytics/cfg/models/fuse26/      # 40 份 YOLO26 融合配置
 ├── ultralytics/data/rgbir.py           # 配对图像读取与路径映射
 ├── ultralytics/nn/modules/            # 模态选择、DEA 和 DEFA
 ├── fusion_weights.py                 # 预训练参数映射

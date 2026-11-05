@@ -24,7 +24,7 @@ FUSE = ROOT / "ultralytics/cfg/models/fuse26"
 DEVICE = os.getenv("YOLOFUSE_TEST_DEVICE", "cpu")
 
 
-@pytest.mark.parametrize("variant", ("decision", "easy", "mid", "early", "data", "defa", "deyolo"))
+@pytest.mark.parametrize("variant", ("decision", "easy", "mid", "early", "data", "defa", "deyolo", "defa-mala-core"))
 def test_yolo26_both_modalities_train_and_both_heads_infer(variant):
     torch.manual_seed(7)
     model = DetectionModel(str(FUSE / f"yolo26n-{variant}.yaml"), verbose=False).to(DEVICE)

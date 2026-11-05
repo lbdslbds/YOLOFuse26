@@ -7,7 +7,7 @@ import yaml
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE = ROOT / "ultralytics/cfg/models/26/yolo26.yaml"
 OUTPUT = ROOT / "ultralytics/cfg/models/fuse26"
-VARIANTS = ("decision", "easy", "mid", "early", "data", "defa", "deyolo")
+VARIANTS = ("decision", "easy", "mid", "early", "data", "defa", "deyolo", "defa-mala-core")
 
 
 def build(variant, scale="n"):
@@ -67,9 +67,12 @@ def build(variant, scale="n"):
             boundary = len(layers)
             fused = {}
             for level, channels in ((4, 512), (6, 512), (10, 1024)):
-                if variant in ("defa", "deyolo"):
-                    module = "DEFA" if variant == "defa" else "DEA"
-                    args = [] if module == "DEFA" else [{4: 80, 6: 40, 10: 20}[level]]
+                if variant in ("defa", "deyolo", "defa-mala-core"):
+                    module = "DEA" if variant == "deyolo" else "DEFA"
+                    if variant == "defa-mala-core":
+                        args = [16, 8, 5, "mala-core"]
+                    else:
+                        args = [] if module == "DEFA" else [{4: 80, 6: 40, 10: 20}[level]]
                     fused[level] = add([[rgb[level], ir[level]], 1, module, args])
                 else:
                     joined = add([[rgb[level], ir[level]], 1, "Concat", [1]])

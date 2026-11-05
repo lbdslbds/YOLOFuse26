@@ -10,11 +10,17 @@
   <a href="https://github.com/lbdslbds/YOLOFuse26/stargazers"><img src="https://img.shields.io/github/stars/lbdslbds/YOLOFuse26?style=social" alt="GitHub stars"></a>
 </p>
 
-**YOLOFuse26** brings the multimodal fusion approach of [YOLOFuse](https://github.com/WangQvQ/YOLOFuse) to **Ultralytics 8.4.180 / YOLO26**. It supports joint training, validation, and inference on paired visible (RGB) and infrared (IR) images, with seven fusion strategies for multimodal detection research in low light, surveillance, disaster response, and industrial inspection.
+**YOLOFuse26** brings the multimodal fusion approach of [YOLOFuse](https://github.com/WangQvQ/YOLOFuse) to **Ultralytics 8.4.180 / YOLO26**. It supports joint training, validation, and inference on paired visible (RGB) and infrared (IR) images, with eight fusion strategies for multimodal detection research in low light, surveillance, disaster response, and industrial inspection.
 
-Migration and functional validation are complete. Detection accuracy after full training still needs evaluation on the target dataset.
+Migration and functional validation are complete, with full-training comparisons of DEFA and DEFA-MALA-core recorded below. Accuracy represents single runs on one fixed dataset split; see the [DEFA-MALA-core notes](docs/DEFA_MALA_CORE.md) for methods and limitations.
 
 ## 📋 Changelog
+
+### 2026-11-06 · DEFA-MALA-core and full-training comparison
+
+- Added `defa-mala-core`, replacing only DEFA's P3/P4/P5 cross-attention core while retaining dynamic convolution, gates, residuals, and enhancement. Five sizes (`n/s/m/l/x`) bring the current total to 40 fusion YAMLs.
+- Nano runs completed both a 100-epoch comparison and a 300-epoch-limit comparison with patience=30, using effective AMP and Inductor compilation. MALA-core scored below DEFA on validation and test in the latest early-stopping experiment; no accuracy improvement is claimed.
+- The training CLI exposes `--patience`, defaulting to 0 (disabled); resumed runs retain checkpoint settings. See [experiment details](docs/DEFA_MALA_CORE.md) for results and reproduction limits.
 
 ### 2026-10-23 · Compilation, export, and compute validation
 
@@ -51,6 +57,7 @@ Migration and functional validation are complete. Detection accuracy after full 
 | `mid` | P3/P4/P5 fusion followed by a shared PAN | [yolo26n-mid.yaml](ultralytics/cfg/models/fuse26/yolo26n-mid.yaml) |
 | `easy` | Fused P3/P4/P5 features from two backbones feed the detector directly | [yolo26n-easy.yaml](ultralytics/cfg/models/fuse26/yolo26n-easy.yaml) |
 | `defa` | Dual backbones, Dynamic Enhanced Fusion Attention, and a shared PAN | [yolo26n-defa.yaml](ultralytics/cfg/models/fuse26/yolo26n-defa.yaml) |
+| `defa-mala-core` | DEFA with MALA-core cross-attention; retains dynamic convolution, gates, and enhancement | [yolo26n-defa-mala-core.yaml](ultralytics/cfg/models/fuse26/yolo26n-defa-mala-core.yaml) |
 | `deyolo` | Dual backbones, DEA attention from [DEYOLO](https://arxiv.org/abs/2412.04931), and a shared PAN | [yolo26n-deyolo.yaml](ultralytics/cfg/models/fuse26/yolo26n-deyolo.yaml) |
 
 Select a model size with `--scale n/s/m/l/x`. Runtime validation currently covers **n**; larger configurations have been generated but have not been individually validated. DEFA attention can consume substantial memory at high resolution; adjust the batch size to your GPU.
@@ -65,10 +72,15 @@ Select a model size with `--scale n/s/m/l/x`. Runtime validation currently cover
 | YOLO26n-Early | RGB+IR | | | | | | |
 | YOLO26n-Mid | RGB+IR | | | | | | |
 | YOLO26n-Easy | RGB+IR | | | | | | |
-| YOLO26n-DEFA | RGB+IR | | | | | | 37.470 |
+| YOLO26n-DEFA | RGB+IR | 81.11 | 76.50 | 81.31 | 57.04 | | 37.470 |
+| YOLO26n-DEFA-MALA-core | RGB+IR | 82.33 | 74.50 | 79.68 | 55.84 | | |
 | YOLO26n-DEYOLO | RGB+IR | | | | | | |
 
-Measured at nano scale, 4 classes, batch=1, with one 640×640 RGB+IR pair (six channels). Uses built-in model fusion and one deployment head, and THOP 2.2.3's `GFLOPs = 2 × MACs / 1e9` convention, including attention and dynamic-kernel products. Preprocessing and NMS are excluded. Both heads have identical arithmetic counts. Accuracy and checkpoint file size remain blank pending corresponding full-training results. See [method and reproduction](docs/MODERN_RUNTIME.md#gflops-口径与复现).
+Detection metrics are percentages from independent **test** evaluation on a fixed RGB+IR split of 5279/721/2676 training/validation/test pairs, with person, rider, bicycle, and car classes. Both nano models used 640 inputs, batch=16, SGD, AMP, and `compile=True`, with a 300-epoch limit and patience=30. DEFA/MALA-core stopped at epochs 219/285; checkpoints from epochs 189/255 were selected by validation mAP50–95.
+
+Final evaluation used FP32 eager execution, **one-to-many + NMS**, `conf=0.001`, `iou=0.7`, `max_det=300`, and COCO crowd matching. P/R use each class's maximum-F1 point on the COCO IoU=0.50 interpolated grid. Each configuration has one run; MALA-core resumed after epoch 144, and identical initialization of new fusion parameters was not established. No statistical significance or general superiority is claimed. See [experiment details](docs/DEFA_MALA_CORE.md#recorded-experiments) for validation scores and limitations. The original dataset, exact split lists/manifests, and trained checkpoints are not distributed with this repository. Exact reproduction requires those original assets; the example command provides training settings for your own data.
+
+Compute was measured separately at nano scale, 4 classes, batch=1, with one 640×640 RGB+IR pair (six channels). It uses built-in model fusion, one deployment head, and THOP 2.2.3's `GFLOPs = 2 × MACs / 1e9` convention, including attention and dynamic-kernel products. Preprocessing and NMS are excluded. Both heads have identical counts for the measured Decision/DEFA models; a dedicated MALA-core count is unavailable. Checkpoint sizes and other blank entries remain unreported; smoke-test scores are not accuracy benchmarks. See [method and reproduction](docs/MODERN_RUNTIME.md#gflops-口径与复现).
 
 ## 🚀 Quick start
 
@@ -114,11 +126,14 @@ python train_dual.py --data configs/rgbir.yaml --fusion decision --scale n --dev
 # Easy feature fusion
 python train_dual.py --data configs/rgbir.yaml --fusion easy --scale n --device 0 --epochs 100 --batch 16
 
+# MALA-core: at most 300 epochs, stopping after 30 epochs without validation improvement
+python train_dual.py --data configs/rgbir-tvt.yaml --fusion defa-mala-core --scale n --device 0 --epochs 300 --patience 30 --imgsz 640 --batch 16 --workers 4 --optimizer SGD --cache disk --amp --compile --nms
+
 ```
 
 The default pretrained path is `weights/yolo26{scale}.pt`. Ultralytics downloads the official asset if it is missing. Use `--weights /path/to/yolo26n.pt` for a local checkpoint or `--scratch` for random initialization. The pretrained scale must match `--scale`; classification outputs are initialized for the target dataset.
 
-Defaults: `imgsz=640`, `optimizer=MuSGD`, `seed=0`, `amp=True`, `cache=False`. New runs enable automatic mixed precision with the trainer's compatibility checks; use `--no-amp` for FP32. Options include `--cache disk`, `--cache ram`, `--optimizer SGD`, and `--device cpu`. Resumed runs retain the checkpoint's precision setting.
+Defaults: `imgsz=640`, `optimizer=MuSGD`, `seed=0`, `amp=True`, `cache=False`, `patience=0`. For new runs, `--patience N` sets the early-stopping wait; 0 disables it. Resume retains the checkpoint's saved patience. New runs enable automatic mixed precision with the trainer's compatibility checks; use `--no-amp` for FP32. Options include `--cache disk`, `--cache ram`, `--optimizer SGD`, and `--device cpu`. Resumed runs retain the checkpoint's precision setting.
 
 Add `--compile` to training or validation to enable `torch.compile`. See [runtime notes](docs/MODERN_RUNTIME.md) for the tested PyTorch 2.12.1 environment and modern ONNX export. See [crowd-aware detection](docs/CROWD.md) for the original-COCO evaluation and crowd training policy.
 
@@ -187,7 +202,7 @@ The 2026-10-23 validation on PyTorch 2.12.1 covers CPU/CUDA compilation, FlashAt
 python -m pytest -c tests/pytest.ini tests/test_rgbir26.py -q
 ```
 
-See [migration and validation notes](docs/MIGRATION.md) for GPU tests, optional dataset integration checks, and coverage limits. Fully trained fusion checkpoints and target-dataset accuracy results are not published yet.
+See [migration and validation notes](docs/MIGRATION.md) for GPU tests, optional dataset integration checks, and coverage limits. Full-training DEFA/MALA-core summary metrics are reported above; trained weights are not distributed with the repository. Original DEFA export and FlashAttention checks do not validate MALA-core.
 
 ## ⚡ Cloud deployment
 
@@ -199,7 +214,7 @@ On AutoDL or another GPU server, clone the repository, configure PyTorch / CUDA,
 YOLOFuse26/
 ├── configs/rgbir.yaml                  # Paired dataset template
 ├── docs/MIGRATION.md                   # Migration design and validation scope
-├── ultralytics/cfg/models/fuse26/      # 35 YOLO26 fusion configurations
+├── ultralytics/cfg/models/fuse26/      # 40 YOLO26 fusion configurations
 ├── ultralytics/data/rgbir.py           # Paired reader and path mapping
 ├── ultralytics/nn/modules/            # Modality selection, DEA, and DEFA
 ├── fusion_weights.py                 # Pretrained parameter transfer

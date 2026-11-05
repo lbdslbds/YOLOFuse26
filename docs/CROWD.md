@@ -7,7 +7,7 @@ filename `configs/rgbir-crowd.yaml` now points to this same fixed split. See
 [runtime and migration notes](MODERN_RUNTIME.md) for the verified dataset and commands.
 
 Before the fixed split was introduced, the crowd configuration used the separate
-dataset view `/root/autodl-tmp/datasets_crowd_20261018`. That historical view retained
+dataset view `datasets_crowd_20261018`. That historical view retained
 the then-existing train/val membership and did not resolve earlier use of the original
 test split for selection. The current fixed split supersedes that membership.
 
@@ -45,6 +45,13 @@ default here; the standard COCO default is 100). P/R use per-class maximum F1
 on the COCO IoU=0.50 interpolated precision/recall grid; they are not the former
 Ultralytics confidence operating point. Incompatible confusion matrices, PR/F1
 curves and per-image matching metrics are disabled rather than mislabeled.
+
+COCO matching uses annotation ID zero as an unmatched sentinel. Before evaluation,
+non-positive annotation IDs are remapped to unused positive IDs in an in-memory
+copy, above the original maximum. Positive IDs, image/category IDs, boxes, areas,
+and `iscrowd` remain unchanged, and the original annotation file is never rewritten.
+The evaluator records this remapping in `crowd_evaluation.json`; this avoids silently
+treating a ground-truth annotation with ID zero as an unmatched detection.
 
 Each validation writes `crowd_evaluation.json` with settings, annotation checksum,
 actual image subset and scores; `predictions_coco.json` uses original COCO image

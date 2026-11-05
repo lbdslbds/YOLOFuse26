@@ -10,7 +10,7 @@ from ultralytics import YOLO
 from fusion_weights import initialize_from_yolo26
 
 ROOT = Path(__file__).resolve().parent
-VARIANTS = ("decision", "easy", "mid", "early", "data", "defa", "deyolo")
+VARIANTS = ("decision", "easy", "mid", "early", "data", "defa", "deyolo", "defa-mala-core")
 
 
 def main():
@@ -22,6 +22,8 @@ def main():
     parser.add_argument("--scratch", action="store_true")
     parser.add_argument("--resume", type=Path)
     parser.add_argument("--epochs", type=int, default=100)
+    parser.add_argument("--patience", type=int, default=0,
+                        help="Epochs without validation improvement before early stopping; 0 disables it. Resume keeps the checkpoint setting.")
     parser.add_argument("--imgsz", type=int, default=640)
     parser.add_argument("--batch", type=int, default=16)
     parser.add_argument("--workers", type=int, default=4)
@@ -38,6 +40,8 @@ def main():
     parser.add_argument("--fraction", type=float, default=1.0)
     parser.add_argument("--nms", action="store_true", help="Validate the one-to-many NMS head instead of the end-to-end head")
     args = parser.parse_args()
+    if args.patience < 0:
+        parser.error("--patience must be nonnegative")
     if args.device != "cpu" and not torch.cuda.is_available():
         raise SystemExit("No CUDA GPU is available. Enable GPU mode, or pass --device cpu for a small smoke run.")
     data = yaml.safe_load(Path(args.data).read_text())
@@ -57,7 +61,7 @@ def main():
     model.train(data=args.data, epochs=args.epochs, imgsz=args.imgsz, batch=args.batch, workers=args.workers,
                 device=args.device, optimizer=args.optimizer, cache=False if args.cache == "false" else args.cache,
                 project=str(ROOT / "runs/train"), name=args.name or f"yolo26{args.scale}-{args.fusion}",
-                nms=None if args.nms else False, seed=0, deterministic=True, amp=args.amp, patience=0,
+                nms=None if args.nms else False, seed=0, deterministic=True, amp=args.amp, patience=args.patience,
                 close_mosaic=0, fraction=args.fraction, plots=True, compile=args.compile or False)
 
 

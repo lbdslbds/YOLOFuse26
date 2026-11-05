@@ -17,6 +17,7 @@ dist/
 /data/
 /runs/
 /reports/
+/experiments/
 /weights/*
 !/weights/README.md
 *.pt

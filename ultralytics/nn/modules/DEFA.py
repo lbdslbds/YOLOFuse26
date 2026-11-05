@@ -3,9 +3,11 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.nn import MultiheadAttention
 
+from ultralytics.nn.modules.mala import MALACrossAttention
+
 class DEFA(nn.Module):
-    """Dynamic Enhanced Fusion Attention"""
-    def __init__(self, channels=512, reduction=16, num_heads=8, dynamic_k=5):
+    """Dynamic Enhanced Fusion Attention with an optional MALA-core cross-attention kernel."""
+    def __init__(self, channels=512, reduction=16, num_heads=8, dynamic_k=5, attention_type="softmax"):
         super().__init__()
         # 1. 动态核参数学习
         self.dynamic_conv = nn.Sequential(
@@ -16,8 +18,12 @@ class DEFA(nn.Module):
             nn.Softmax(dim=1)
         )
 
-        # 2. 交叉注意力机制
-        self.cross_attn = MultiheadAttention(
+        # 2. Only the attention operator changes; the remaining DEFA paths are shared.
+        if attention_type not in {"softmax", "mala-core"}:
+            raise ValueError(f"Unsupported DEFA attention type: {attention_type!r}")
+        self.attention_type = attention_type
+        attention_cls = MultiheadAttention if attention_type == "softmax" else MALACrossAttention
+        self.cross_attn = attention_cls(
             embed_dim=channels,
             num_heads=num_heads,
             batch_first=True
